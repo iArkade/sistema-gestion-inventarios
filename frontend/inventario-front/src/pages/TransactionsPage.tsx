@@ -1,4 +1,4 @@
-import React, { useState, useEffect, type FormEvent, type ChangeEvent } from 'react';
+import React, { useState, useEffect, useCallback, type FormEvent, type ChangeEvent } from 'react';
 import { transactionApi, NotificationService } from '../services/api';
 import type {
     Transaction,
@@ -18,22 +18,22 @@ const TransactionsPage: React.FC = () => {
     const [showForm, setShowForm] = useState<boolean>(false);
     const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
 
-    // Filtros
-    const [productFilter, setProductFilter] = useState<string>('');
-    const [typeFilter, setTypeFilter] = useState<string>('');
-    const [dateFrom, setDateFrom] = useState<string>('');
-    const [dateTo, setDateTo] = useState<string>('');
-    const [search, setSearch] = useState<string>('');
-    const [sortBy, setSortBy] = useState<string>('date');
-    const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+    const [filters, setFilters] = useState({
+        productFilter: '',
+        typeFilter: '',
+        dateFrom: '',
+        dateTo: '',
+        search: ''
+    });
 
-    // Paginación
-    const [currentPage, setCurrentPage] = useState<number>(1);
-    const [pageSize, setPageSize] = useState<number>(10);
-    const [totalPages, setTotalPages] = useState<number>(1);
-    const [totalRecords, setTotalRecords] = useState<number>(0);
-    const [hasNextPage, setHasNextPage] = useState<boolean>(false);
-    const [hasPreviousPage, setHasPreviousPage] = useState<boolean>(false);
+    const [pagination, setPagination] = useState({
+        currentPage: 1,
+        pageSize: 10,
+        totalPages: 1,
+        totalRecords: 0,
+        hasNextPage: false,
+        hasPreviousPage: false
+    });
 
     const [formData, setFormData] = useState<CreateTransactionRequest>({
         transactionType: 'Purchase',
@@ -49,56 +49,64 @@ const TransactionsPage: React.FC = () => {
     useEffect(() => {
         loadTransactions();
         loadProducts();
-    }, [productFilter, typeFilter, dateFrom, dateTo, search, sortBy, sortDirection, currentPage, pageSize]);
+    }, [filters, pagination.currentPage, pagination.pageSize]);
 
-    const loadTransactions = async (): Promise<void> => {
+    const loadTransactions = useCallback(async (): Promise<void> => {
         setLoading(true);
         try {
-            const filters: FilterParameters = {
-                productId: productFilter ? parseInt(productFilter) : undefined,
-                transactionType: typeFilter || undefined,
-                dateFrom: dateFrom || undefined,
-                dateTo: dateTo || undefined,
-                search: search || undefined,
-                sortBy,
-                sortDirection,
-                page: currentPage,
-                pageSize
+            const filterParams: FilterParameters = {
+                productId: filters.productFilter ? parseInt(filters.productFilter) : undefined,
+                transactionType: filters.typeFilter || undefined,
+                dateFrom: filters.dateFrom || undefined,
+                dateTo: filters.dateTo || undefined,
+                search: filters.search || undefined,
+                sortBy: 'date',
+                sortDirection: 'desc',
+                page: pagination.currentPage,
+                pageSize: pagination.pageSize
             };
 
-            const result = await transactionApi.getAll(filters);
+            const result = await transactionApi.getAll(filterParams);
             setTransactions(result.data);
-            setTotalPages(result.totalPages);
-            setTotalRecords(result.totalRecords);
-            setHasNextPage(result.hasNextPage);
-            setHasPreviousPage(result.hasPreviousPage);
+            setPagination(prev => ({
+                ...prev,
+                totalPages: result.totalPages,
+                totalRecords: result.totalRecords,
+                hasNextPage: result.hasNextPage,
+                hasPreviousPage: result.hasPreviousPage
+            }));
         } catch (error) {
             console.error('Error al cargar transacciones:', error);
-            NotificationService.show('Error al cargar las transacciones', 'danger');
         } finally {
             setLoading(false);
         }
-    };
+    }, [filters, pagination.currentPage, pagination.pageSize]);
 
-    const loadProducts = async (): Promise<void> => {
+    const loadProducts = useCallback(async (forceRefresh: boolean = false): Promise<void> => {
         try {
-            const result = await transactionApi.getProducts();
+            const result = await transactionApi.getProducts(forceRefresh);
             setProducts(result);
+
+            if (selectedProduct) {
+                const updatedProduct = result.find(p => p.id === selectedProduct.id);
+                if (updatedProduct) {
+                    setSelectedProduct(updatedProduct);
+                }
+            }
         } catch (error) {
             console.error('Error al cargar productos:', error);
-            NotificationService.show('Error al cargar los productos', 'warning');
         }
-    };
+    }, [selectedProduct]);
 
-    const validateForm = (): boolean => {
+    const validateForm = useCallback((): boolean => {
         const errors: FormErrors = {};
 
         if (!formData.transactionType) {
-            errors.transactionType = 'El tipo de transacción es obligatorio';
+            errors.transactionType = 'Selecciona el tipo de transacción';
         }
 
-        if (!formData.productId || formData.productId === 0) {
-            errors.productId = 'Debe seleccionar un producto';
+        if (!formData.productId) {
+            errors.productId = 'Selecciona un producto';
         }
 
         if (formData.quantity <= 0) {
@@ -106,25 +114,24 @@ const TransactionsPage: React.FC = () => {
         }
 
         if (formData.unitPrice <= 0) {
-            errors.unitPrice = 'El precio unitario debe ser mayor a 0';
+            errors.unitPrice = 'El precio debe ser mayor a 0';
         }
 
-        // Validar stock para ventas
         if (formData.transactionType === 'Sale' && selectedProduct) {
             if (formData.quantity > selectedProduct.stock) {
-                errors.quantity = `Stock insuficiente. Disponible: ${selectedProduct.stock}`;
+                errors.quantity = `Stock insuficiente. Solo hay ${selectedProduct.stock} unidades disponibles`;
             }
         }
 
         setFormErrors(errors);
         return Object.keys(errors).length === 0;
-    };
+    }, [formData, selectedProduct]);
 
     const handleSubmit = async (e: FormEvent<HTMLFormElement>): Promise<void> => {
         e.preventDefault();
 
         if (!validateForm()) {
-            NotificationService.show('Por favor corrige los errores en el formulario', 'warning');
+            NotificationService.show('Corrige los errores en el formulario', 'warning');
             return;
         }
 
@@ -138,18 +145,14 @@ const TransactionsPage: React.FC = () => {
                     details: formData.details
                 };
                 await transactionApi.update(editingTransaction.id, updateData);
-                NotificationService.show('Transacción actualizada exitosamente', 'success');
             } else {
                 await transactionApi.create(formData);
-                NotificationService.show('Transacción creada exitosamente', 'success');
             }
 
             handleCloseForm();
-            await loadTransactions();
-            await loadProducts();
+            await Promise.all([loadTransactions(), loadProducts(true)]);
         } catch (error) {
             console.error('Error al guardar transacción:', error);
-            NotificationService.show('Error al guardar la transacción', 'danger');
         }
     };
 
@@ -163,6 +166,7 @@ const TransactionsPage: React.FC = () => {
             details: transaction.details || ''
         });
 
+        await loadProducts(true);
         const product = products.find(p => p.id === transaction.productId);
         setSelectedProduct(product || null);
         setFormErrors({});
@@ -171,30 +175,27 @@ const TransactionsPage: React.FC = () => {
 
     const handleDelete = async (transaction: Transaction): Promise<void> => {
         const confirmed = window.confirm(
-            `¿Estás seguro de que deseas eliminar esta transacción?\n\n` +
-            `📋 Tipo: ${transaction.transactionType === 'Purchase' ? 'Compra' : 'Venta'}\n` +
-            `📦 Producto: ${transaction.productName}\n` +
-            `📊 Cantidad: ${transaction.quantity} unidades\n` +
-            `💰 Total: $${transaction.totalPrice.toFixed(2)}\n` +
-            `📅 Fecha: ${new Date(transaction.transactionDate).toLocaleString()}\n\n` +
-            `⚠️ Esta acción no se puede deshacer y afectará el stock del producto.`
+            `¿Eliminar esta transacción?\n\n` +
+            `${transaction.transactionType === 'Purchase' ? '🔻 Compra' : '🔺 Venta'}\n` +
+            `Producto: ${transaction.productName}\n` +
+            `Cantidad: ${transaction.quantity} unidades\n` +
+            `Total: $${transaction.totalPrice.toFixed(2)}\n\n` +
+            `Esta acción no se puede deshacer.`
         );
 
         if (confirmed) {
             try {
                 await transactionApi.delete(transaction.id);
-                NotificationService.show('Transacción eliminada exitosamente', 'success');
-                await loadTransactions();
-                await loadProducts();
+                await Promise.all([loadTransactions(), loadProducts(true)]);
             } catch (error) {
                 console.error('Error al eliminar transacción:', error);
-                NotificationService.show('Error al eliminar la transacción', 'danger');
             }
         }
     };
 
-    const handleProductChange = (productIdString: string): void => {
+    const handleProductChange = useCallback(async (productIdString: string): Promise<void> => {
         const productId = productIdString ? parseInt(productIdString) : 0;
+
         const product = products.find(p => p.id === productId);
         setSelectedProduct(product || null);
         setFormData(prev => ({
@@ -203,14 +204,13 @@ const TransactionsPage: React.FC = () => {
             unitPrice: product ? product.price : 0
         }));
 
-        // Limpiar error específico
         if (formErrors.productId) {
             setFormErrors(prev => {
                 const { productId, ...rest } = prev;
                 return rest;
             });
         }
-    };
+    }, [products, formErrors.productId]);
 
     const handleCloseForm = (): void => {
         setShowForm(false);
@@ -220,28 +220,24 @@ const TransactionsPage: React.FC = () => {
         setFormErrors({});
     };
 
-    const handlePageChange = (page: number): void => {
-        setCurrentPage(page);
+    const handleFilterChange = (newFilters: Partial<typeof filters>): void => {
+        setFilters(prev => ({ ...prev, ...newFilters }));
+        setPagination(prev => ({ ...prev, currentPage: 1 }));
     };
 
-    const handleFilterChange = (): void => {
-        setCurrentPage(1);
+    const handlePageChange = (page: number): void => {
+        setPagination(prev => ({ ...prev, currentPage: page }));
     };
 
     const clearFilters = (): void => {
-        setProductFilter('');
-        setTypeFilter('');
-        setDateFrom('');
-        setDateTo('');
-        setSearch('');
-        setSortBy('date');
-        setSortDirection('desc');
-        setCurrentPage(1);
-        NotificationService.show('Filtros limpiados', 'info');
-    };
-
-    const getTotalPrice = (): string => {
-        return (formData.quantity * formData.unitPrice).toFixed(2);
+        setFilters({
+            productFilter: '',
+            typeFilter: '',
+            dateFrom: '',
+            dateTo: '',
+            search: ''
+        });
+        setPagination(prev => ({ ...prev, currentPage: 1 }));
     };
 
     const handleInputChange = (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>): void => {
@@ -257,7 +253,6 @@ const TransactionsPage: React.FC = () => {
             [name]: type === 'number' ? (value === '' ? 0 : Number(value)) : value
         }));
 
-        // Limpiar error específico al escribir
         if (formErrors[name]) {
             setFormErrors(prev => {
                 const { [name]: _, ...rest } = prev;
@@ -266,160 +261,134 @@ const TransactionsPage: React.FC = () => {
         }
     };
 
-    const formatPrice = (price: number) => {
+    const formatPrice = (price: number): string => {
         return new Intl.NumberFormat('es-ES', {
             style: 'currency',
             currency: 'USD'
         }).format(price);
     };
 
-    // Calcular estadísticas rápidas
-    const totalPurchases = transactions.filter(t => t.transactionType === 'Purchase').length;
-    const totalSales = transactions.filter(t => t.transactionType === 'Sale').length;
-    const totalPurchaseAmount = transactions
-        .filter(t => t.transactionType === 'Purchase')
-        .reduce((sum, t) => sum + t.totalPrice, 0);
-    const totalSaleAmount = transactions
-        .filter(t => t.transactionType === 'Sale')
-        .reduce((sum, t) => sum + t.totalPrice, 0);
+    const getTotalPrice = (): string => {
+        return (formData.quantity * formData.unitPrice).toFixed(2);
+    };
+
+    const stats = {
+        total: transactions.length,
+        purchases: transactions.filter(t => t.transactionType === 'Purchase').length,
+        sales: transactions.filter(t => t.transactionType === 'Sale').length,
+        purchaseAmount: transactions.filter(t => t.transactionType === 'Purchase').reduce((sum, t) => sum + t.totalPrice, 0),
+        saleAmount: transactions.filter(t => t.transactionType === 'Sale').reduce((sum, t) => sum + t.totalPrice, 0)
+    };
 
     return (
-        <div className="fade-in-up">
-            {/* Header Mejorado */}
+        <div className="container-fluid py-4">
+            {/* Header Profesional */}
             <div className="row align-items-center mb-4">
-                <div className="col-md-8">
+                <div className="col">
                     <div className="d-flex align-items-center">
-                        <div className="me-3">
-                            <div
-                                className="d-flex align-items-center justify-content-center"
-                                style={{
-                                    width: '60px',
-                                    height: '60px',
-                                    background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
-                                    borderRadius: '16px',
-                                    boxShadow: '0 4px 12px rgba(5, 150, 105, 0.3)'
-                                }}
-                            >
-                                <i className="fas fa-exchange-alt fa-lg text-white"></i>
-                            </div>
+                        <div className="icon-box bg-primary me-3">
+                            <i className="fas fa-exchange-alt"></i>
                         </div>
                         <div>
-                            <h1 className="mb-1 fw-bold text-gradient">Gestión de Transacciones</h1>
+                            <h1 className="h3 mb-0 fw-bold">Gestión de Transacciones</h1>
+                            <p className="text-muted mb-0">Administra compras y ventas de inventario</p>
                         </div>
                     </div>
                 </div>
-                <div className="col-md-4 text-end">
+                <div className="col-auto">
                     <button
-                        className="btn btn-primary btn-lg hover-lift"
-                        onClick={() => {
+                        className="btn btn-primary btn-lg"
+                        onClick={async () => {
                             setShowForm(true);
                             setEditingTransaction(null);
                             setFormData({ transactionType: 'Purchase', productId: 0, quantity: 1, unitPrice: 0, details: '' });
                             setSelectedProduct(null);
                             setFormErrors({});
+                            await loadProducts(true);
                         }}
                     >
                         <i className="fas fa-plus me-2"></i>
-                        <span>Nueva Transacción</span>
+                        Nueva Transacción
                     </button>
                 </div>
             </div>
 
-            {/* Stats Cards */}
+            {/* Estadísticas */}
             <div className="row mb-4">
-                <div className="col-md-3 mb-3">
-                    <div className="card h-100">
-                        <div className="card-body text-center">
-                            <div className="mb-2">
-                                <i className="fas fa-exchange-alt fa-2x text-primary"></i>
-                            </div>
-                            <h4 className="fw-bold text-primary">{transactions.length}</h4>
-                            <small className="text-muted">Total Transacciones</small>
+                <div className="col-lg-3 col-md-6 mb-3">
+                    <div className="stats-card">
+                        <div className="stats-icon bg-primary">
+                            <i className="fas fa-exchange-alt"></i>
+                        </div>
+                        <div className="stats-content">
+                            <h3 className="stats-number">{stats.total}</h3>
+                            <p className="stats-label">Total Transacciones</p>
                         </div>
                     </div>
                 </div>
-                <div className="col-md-3 mb-3">
-                    <div className="card h-100">
-                        <div className="card-body text-center">
-                            <div className="mb-2">
-                                <i className="fas fa-arrow-down fa-2x text-success"></i>
-                            </div>
-                            <h4 className="fw-bold text-success">{totalPurchases}</h4>
-                            <small className="text-muted">Compras</small>
+                <div className="col-lg-3 col-md-6 mb-3">
+                    <div className="stats-card">
+                        <div className="stats-icon bg-success">
+                            <i className="fas fa-arrow-down"></i>
+                        </div>
+                        <div className="stats-content">
+                            <h3 className="stats-number">{stats.purchases}</h3>
+                            <p className="stats-label">Compras</p>
                         </div>
                     </div>
                 </div>
-                <div className="col-md-3 mb-3">
-                    <div className="card h-100">
-                        <div className="card-body text-center">
-                            <div className="mb-2">
-                                <i className="fas fa-arrow-up fa-2x text-danger"></i>
-                            </div>
-                            <h4 className="fw-bold text-danger">{totalSales}</h4>
-                            <small className="text-muted">Ventas</small>
+                <div className="col-lg-3 col-md-6 mb-3">
+                    <div className="stats-card">
+                        <div className="stats-icon bg-danger">
+                            <i className="fas fa-arrow-up"></i>
+                        </div>
+                        <div className="stats-content">
+                            <h3 className="stats-number">{stats.sales}</h3>
+                            <p className="stats-label">Ventas</p>
                         </div>
                     </div>
                 </div>
-                <div className="col-md-3 mb-3">
-                    <div className="card h-100">
-                        <div className="card-body text-center">
-                            <div className="mb-2">
-                                <i className="fas fa-balance-scale fa-2x text-info"></i>
-                            </div>
-                            <h4 className="fw-bold text-info">
-                                {formatPrice(totalSaleAmount - totalPurchaseAmount)}
-                            </h4>
-                            <small className="text-muted">Utilidad Bruta</small>
+                <div className="col-lg-3 col-md-6 mb-3">
+                    <div className="stats-card">
+                        <div className="stats-icon bg-info">
+                            <i className="fas fa-chart-line"></i>
+                        </div>
+                        <div className="stats-content">
+                            <h3 className="stats-number">{formatPrice(stats.saleAmount - stats.purchaseAmount)}</h3>
+                            <p className="stats-label">Utilidad</p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* Filtros Mejorados */}
-            <div className="card mb-4 hover-lift">
+            {/* Filtros Simplificados */}
+            <div className="card mb-4">
                 <div className="card-header">
-                    <div className="d-flex align-items-center justify-content-between">
-                        <h5 className="mb-0 fw-bold">
-                            <i className="fas fa-filter me-2 text-primary"></i>
-                            Filtros de Búsqueda
-                        </h5>
-                        <small className="text-muted">
-                            Mostrando {transactions.length} de {totalRecords} transacciones
-                        </small>
-                    </div>
+                    <h5 className="card-title mb-0">
+                        <i className="fas fa-filter me-2"></i>
+                        Filtros
+                    </h5>
                 </div>
                 <div className="card-body">
                     <div className="row g-3">
-                        <div className="col-md-2">
-                            <label className="form-label">
-                                <i className="fas fa-search me-1"></i>
-                                Buscar
-                            </label>
+                        <div className="col-md-3">
+                            <label className="form-label">Buscar</label>
                             <input
                                 type="text"
                                 className="form-control"
                                 placeholder="Producto o detalles..."
-                                value={search}
-                                onChange={(e) => {
-                                    setSearch(e.target.value);
-                                    handleFilterChange();
-                                }}
+                                value={filters.search}
+                                onChange={(e) => handleFilterChange({ search: e.target.value })}
                             />
                         </div>
-                        <div className="col-md-2">
-                            <label className="form-label">
-                                <i className="fas fa-box me-1"></i>
-                                Producto
-                            </label>
+                        <div className="col-md-3">
+                            <label className="form-label">Producto</label>
                             <select
                                 className="form-select"
-                                value={productFilter}
-                                onChange={(e) => {
-                                    setProductFilter(e.target.value);
-                                    handleFilterChange();
-                                }}
+                                value={filters.productFilter}
+                                onChange={(e) => handleFilterChange({ productFilter: e.target.value })}
                             >
-                                <option value="">Todos los productos</option>
+                                <option value="">Todos</option>
                                 {products.map(product => (
                                     <option key={product.id} value={product.id.toString()}>
                                         {product.name}
@@ -428,71 +397,40 @@ const TransactionsPage: React.FC = () => {
                             </select>
                         </div>
                         <div className="col-md-2">
-                            <label className="form-label">
-                                <i className="fas fa-tag me-1"></i>
-                                Tipo
-                            </label>
+                            <label className="form-label">Tipo</label>
                             <select
                                 className="form-select"
-                                value={typeFilter}
-                                onChange={(e) => {
-                                    setTypeFilter(e.target.value);
-                                    handleFilterChange();
-                                }}
+                                value={filters.typeFilter}
+                                onChange={(e) => handleFilterChange({ typeFilter: e.target.value })}
                             >
-                                <option value="">Todos los tipos</option>
-                                <option value="Purchase">🔻 Compra</option>
-                                <option value="Sale">🔺 Venta</option>
+                                <option value="">Todos</option>
+                                <option value="Purchase">Compra</option>
+                                <option value="Sale">Venta</option>
                             </select>
                         </div>
                         <div className="col-md-2">
-                            <label className="form-label">Fecha desde</label>
+                            <label className="form-label">Desde</label>
                             <input
                                 type="date"
                                 className="form-control"
-                                value={dateFrom}
-                                onChange={(e) => {
-                                    setDateFrom(e.target.value);
-                                    handleFilterChange();
-                                }}
+                                value={filters.dateFrom}
+                                onChange={(e) => handleFilterChange({ dateFrom: e.target.value })}
                             />
                         </div>
                         <div className="col-md-2">
-                            <label className="form-label">Fecha hasta</label>
+                            <label className="form-label">Hasta</label>
                             <input
                                 type="date"
                                 className="form-control"
-                                value={dateTo}
-                                onChange={(e) => {
-                                    setDateTo(e.target.value);
-                                    handleFilterChange();
-                                }}
+                                value={filters.dateTo}
+                                onChange={(e) => handleFilterChange({ dateTo: e.target.value })}
                             />
-                        </div>
-                        <div className="col-md-2">
-                            <label className="form-label">Por página</label>
-                            <select
-                                className="form-select"
-                                value={pageSize}
-                                onChange={(e) => {
-                                    setPageSize(parseInt(e.target.value));
-                                    setCurrentPage(1);
-                                }}
-                            >
-                                <option value="5">5</option>
-                                <option value="10">10</option>
-                                <option value="20">20</option>
-                                <option value="50">50</option>
-                            </select>
                         </div>
                     </div>
                     <div className="row mt-3">
                         <div className="col">
-                            <button
-                                className="btn btn-outline-secondary hover-lift"
-                                onClick={clearFilters}
-                            >
-                                <i className="fas fa-eraser me-2"></i>
+                            <button className="btn btn-outline-secondary" onClick={clearFilters}>
+                                <i className="fas fa-times me-2"></i>
                                 Limpiar Filtros
                             </button>
                         </div>
@@ -500,7 +438,7 @@ const TransactionsPage: React.FC = () => {
                 </div>
             </div>
 
-            {/* Modal de Formulario */}
+            {/* Modal de Formulario Mejorado */}
             {showForm && (
                 <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
                     <div className="modal-dialog modal-lg modal-dialog-centered">
@@ -517,9 +455,7 @@ const TransactionsPage: React.FC = () => {
                                     <div className="row g-3">
                                         <div className="col-md-6">
                                             <label className="form-label">
-                                                <i className="fas fa-exchange-alt me-1"></i>
-                                                Tipo de Transacción
-                                                <span className="text-danger">*</span>
+                                                Tipo de Transacción <span className="text-danger">*</span>
                                             </label>
                                             <select
                                                 name="transactionType"
@@ -531,13 +467,13 @@ const TransactionsPage: React.FC = () => {
                                                 <option value="Purchase">🔻 Compra (Aumenta stock)</option>
                                                 <option value="Sale">🔺 Venta (Reduce stock)</option>
                                             </select>
-                                            {formErrors.transactionType && <div className="invalid-feedback">{formErrors.transactionType}</div>}
+                                            {formErrors.transactionType && (
+                                                <div className="invalid-feedback">{formErrors.transactionType}</div>
+                                            )}
                                         </div>
                                         <div className="col-md-6">
                                             <label className="form-label">
-                                                <i className="fas fa-box me-1"></i>
-                                                Producto
-                                                <span className="text-danger">*</span>
+                                                Producto <span className="text-danger">*</span>
                                             </label>
                                             <select
                                                 name="productId"
@@ -553,34 +489,28 @@ const TransactionsPage: React.FC = () => {
                                                     </option>
                                                 ))}
                                             </select>
-                                            {formErrors.productId && <div className="invalid-feedback">{formErrors.productId}</div>}
+                                            {formErrors.productId && (
+                                                <div className="invalid-feedback">{formErrors.productId}</div>
+                                            )}
                                         </div>
                                     </div>
 
+                                    {/* Información del producto seleccionado */}
                                     {selectedProduct && (
                                         <div className="alert alert-info mt-3">
                                             <div className="row">
                                                 <div className="col-md-6">
-                                                    <strong>
-                                                        <i className="fas fa-box me-1"></i>
-                                                        Producto seleccionado:
-                                                    </strong> {selectedProduct.name}
-                                                    <br />
-                                                    <strong>
-                                                        <i className="fas fa-cubes me-1"></i>
-                                                        Stock disponible:
-                                                    </strong> {selectedProduct.stock} unidades
+                                                    <strong>📦 Producto:</strong> {selectedProduct.name}<br />
+                                                    <strong>📊 Stock disponible:</strong>
+                                                    <span className={`fw-bold ms-1 ${selectedProduct.stock === 0 ? 'text-danger' :
+                                                            selectedProduct.stock < 10 ? 'text-warning' : 'text-success'
+                                                        }`}>
+                                                        {selectedProduct.stock} unidades
+                                                    </span>
                                                 </div>
                                                 <div className="col-md-6">
-                                                    <strong>
-                                                        <i className="fas fa-dollar-sign me-1"></i>
-                                                        Precio sugerido:
-                                                    </strong> {formatPrice(selectedProduct.price)}
-                                                    <br />
-                                                    <strong>
-                                                        <i className="fas fa-tag me-1"></i>
-                                                        Categoría:
-                                                    </strong> {selectedProduct.category}
+                                                    <strong>💰 Precio sugerido:</strong> {formatPrice(selectedProduct.price)}<br />
+                                                    <strong>🏷️ Categoría:</strong> {selectedProduct.category}
                                                 </div>
                                             </div>
                                         </div>
@@ -589,9 +519,7 @@ const TransactionsPage: React.FC = () => {
                                     <div className="row g-3 mt-2">
                                         <div className="col-md-4">
                                             <label className="form-label">
-                                                <i className="fas fa-calculator me-1"></i>
-                                                Cantidad
-                                                <span className="text-danger">*</span>
+                                                Cantidad <span className="text-danger">*</span>
                                             </label>
                                             <input
                                                 type="number"
@@ -600,16 +528,15 @@ const TransactionsPage: React.FC = () => {
                                                 value={formData.quantity}
                                                 onChange={handleInputChange}
                                                 min="1"
-                                                placeholder="0"
                                                 required
                                             />
-                                            {formErrors.quantity && <div className="invalid-feedback">{formErrors.quantity}</div>}
+                                            {formErrors.quantity && (
+                                                <div className="invalid-feedback">{formErrors.quantity}</div>
+                                            )}
                                         </div>
                                         <div className="col-md-4">
                                             <label className="form-label">
-                                                <i className="fas fa-dollar-sign me-1"></i>
-                                                Precio Unitario
-                                                <span className="text-danger">*</span>
+                                                Precio Unitario <span className="text-danger">*</span>
                                             </label>
                                             <div className="input-group">
                                                 <span className="input-group-text">$</span>
@@ -620,51 +547,41 @@ const TransactionsPage: React.FC = () => {
                                                     className={`form-control ${formErrors.unitPrice ? 'is-invalid' : ''}`}
                                                     value={formData.unitPrice}
                                                     onChange={handleInputChange}
-                                                    placeholder="0.00"
                                                     required
                                                 />
-                                                {formErrors.unitPrice && <div className="invalid-feedback">{formErrors.unitPrice}</div>}
+                                                {formErrors.unitPrice && (
+                                                    <div className="invalid-feedback">{formErrors.unitPrice}</div>
+                                                )}
                                             </div>
                                         </div>
                                         <div className="col-md-4">
-                                            <label className="form-label">
-                                                <i className="fas fa-receipt me-1"></i>
-                                                Total
-                                            </label>
+                                            <label className="form-label">Total</label>
                                             <div className="input-group">
                                                 <span className="input-group-text">$</span>
                                                 <input
                                                     type="text"
-                                                    className="form-control fw-bold"
+                                                    className="form-control fw-bold bg-light"
                                                     value={getTotalPrice()}
                                                     readOnly
-                                                    style={{ backgroundColor: '#f8f9fa' }}
                                                 />
                                             </div>
                                         </div>
                                     </div>
 
                                     <div className="mt-3">
-                                        <label className="form-label">
-                                            <i className="fas fa-comment me-1"></i>
-                                            Detalles Adicionales
-                                        </label>
+                                        <label className="form-label">Detalles Adicionales</label>
                                         <textarea
                                             name="details"
                                             className="form-control"
                                             rows={3}
                                             value={formData.details || ''}
                                             onChange={handleInputChange}
-                                            placeholder="Información adicional sobre la transacción (opcional)"
+                                            placeholder="Información adicional (opcional)"
                                         />
-                                        <small className="text-muted">
-                                            Puedes agregar detalles como proveedor, cliente, notas, etc.
-                                        </small>
                                     </div>
                                 </div>
                                 <div className="modal-footer">
-                                    <button type="button" className="btn btn-outline-secondary" onClick={handleCloseForm}>
-                                        <i className="fas fa-times me-2"></i>
+                                    <button type="button" className="btn btn-secondary" onClick={handleCloseForm}>
                                         Cancelar
                                     </button>
                                     <button type="submit" className="btn btn-primary">
@@ -686,152 +603,126 @@ const TransactionsPage: React.FC = () => {
                     </div>
                 </div>
             ) : (
-                <div className="card hover-lift">
+                <div className="card">
+                    <div className="card-header">
+                        <div className="d-flex justify-content-between align-items-center">
+                            <h5 className="card-title mb-0">Historial de Transacciones</h5>
+                            <small className="text-muted">
+                                {transactions.length} de {pagination.totalRecords} registros
+                            </small>
+                        </div>
+                    </div>
                     <div className="card-body p-0">
-                        <div className="table-responsive">
-                            <table className="table mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>
-                                            <i className="fas fa-calendar me-2"></i>
-                                            Fecha
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-tag me-2"></i>
-                                            Tipo
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-box me-2"></i>
-                                            Producto
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-calculator me-2"></i>
-                                            Cantidad
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-dollar-sign me-2"></i>
-                                            P. Unitario
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-receipt me-2"></i>
-                                            Total
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-comment me-2"></i>
-                                            Detalles
-                                        </th>
-                                        <th style={{ width: '130px' }}>
-                                            <i className="fas fa-cogs me-2"></i>
-                                            Acciones
-                                        </th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {transactions.length > 0 ? (
-                                        transactions.map(transaction => (
+                        {transactions.length > 0 ? (
+                            <div className="table-responsive">
+                                <table className="table table-hover mb-0">
+                                    <thead className="table-light">
+                                        <tr>
+                                            <th>Fecha</th>
+                                            <th>Tipo</th>
+                                            <th>Producto</th>
+                                            <th>Cantidad</th>
+                                            <th>P. Unitario</th>
+                                            <th>Total</th>
+                                            <th>Detalles</th>
+                                            <th style={{ width: '120px' }}>Acciones</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {transactions.map(transaction => (
                                             <tr key={transaction.id}>
                                                 <td>
-                                                    <div>
-                                                        <div className="fw-bold">
+                                                    <div className="small">
+                                                        <div className="fw-semibold">
                                                             {new Date(transaction.transactionDate).toLocaleDateString('es-ES')}
                                                         </div>
-                                                        <small className="text-muted">
-                                                            {new Date(transaction.transactionDate).toLocaleTimeString('es-ES')}
-                                                        </small>
+                                                        <div className="text-muted">
+                                                            {new Date(transaction.transactionDate).toLocaleTimeString('es-ES', {
+                                                                hour: '2-digit',
+                                                                minute: '2-digit'
+                                                            })}
+                                                        </div>
                                                     </div>
                                                 </td>
                                                 <td>
-                                                    <span className={`badge ${transaction.transactionType === 'Purchase' ? 'bg-success' : 'bg-danger'}`}>
-                                                        <i className={`fas ${transaction.transactionType === 'Purchase' ? 'fa-arrow-down' : 'fa-arrow-up'} me-1`}></i>
+                                                    <span className={`badge ${transaction.transactionType === 'Purchase' ? 'bg-success' : 'bg-danger'
+                                                        }`}>
                                                         {transaction.transactionType === 'Purchase' ? 'Compra' : 'Venta'}
                                                     </span>
                                                 </td>
+                                                <td className="fw-semibold">{transaction.productName}</td>
                                                 <td>
-                                                    <div className="fw-bold text-dark">{transaction.productName}</div>
-                                                </td>
-                                                <td>
-                                                    <span className={`fw-bold fs-6 ${transaction.transactionType === 'Purchase' ? 'text-success' : 'text-danger'}`}>
+                                                    <span className={`fw-bold ${transaction.transactionType === 'Purchase' ? 'text-success' : 'text-danger'
+                                                        }`}>
                                                         {transaction.transactionType === 'Purchase' ? '+' : '-'}{transaction.quantity}
                                                     </span>
-                                                    <small className="text-muted d-block">unidades</small>
                                                 </td>
+                                                <td className="fw-semibold">{formatPrice(transaction.unitPrice)}</td>
                                                 <td>
-                                                    <span className="fw-bold">{formatPrice(transaction.unitPrice)}</span>
-                                                </td>
-                                                <td>
-                                                    <span className={`fw-bold fs-6 ${transaction.transactionType === 'Purchase' ? 'text-success' : 'text-danger'}`}>
+                                                    <span className={`fw-bold ${transaction.transactionType === 'Purchase' ? 'text-success' : 'text-danger'
+                                                        }`}>
                                                         {formatPrice(transaction.totalPrice)}
                                                     </span>
                                                 </td>
                                                 <td>
                                                     {transaction.details ? (
-                                                        <span
-                                                            title={transaction.details}
-                                                            className="text-truncate d-inline-block"
-                                                            style={{ maxWidth: '150px' }}
-                                                        >
-                                                            {transaction.details.length > 30
-                                                                ? transaction.details.substring(0, 30) + '...'
-                                                                : transaction.details}
+                                                        <span className="text-truncate d-inline-block" style={{ maxWidth: '150px' }}>
+                                                            {transaction.details}
                                                         </span>
                                                     ) : (
-                                                        <em className="text-muted">Sin detalles</em>
+                                                        <span className="text-muted fst-italic">Sin detalles</span>
                                                     )}
                                                 </td>
                                                 <td>
-                                                    <div className="btn-group btn-group-sm" role="group">
+                                                    <div className="btn-group btn-group-sm">
                                                         <button
                                                             className="btn btn-outline-primary"
                                                             onClick={() => handleEdit(transaction)}
-                                                            title={`Editar transacción`}
+                                                            title="Editar"
                                                         >
                                                             <i className="fas fa-edit"></i>
                                                         </button>
                                                         <button
                                                             className="btn btn-outline-danger"
                                                             onClick={() => handleDelete(transaction)}
-                                                            title={`Eliminar transacción`}
+                                                            title="Eliminar"
                                                         >
                                                             <i className="fas fa-trash"></i>
                                                         </button>
                                                     </div>
                                                 </td>
                                             </tr>
-                                        ))
-                                    ) : (
-                                        <tr>
-                                            <td colSpan={8} className="text-center py-5">
-                                                <div className="empty-state">
-                                                    <i className="fas fa-exchange-alt"></i>
-                                                    <h5>No hay transacciones registradas</h5>
-                                                    <p>Comienza registrando tu primera transacción</p>
-                                                    <button
-                                                        className="btn btn-primary"
-                                                        onClick={() => setShowForm(true)}
-                                                    >
-                                                        <i className="fas fa-plus me-2"></i>
-                                                        Nueva Transacción
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ) : (
+                            <div className="text-center py-5">
+                                <i className="fas fa-exchange-alt fa-3x text-muted mb-3"></i>
+                                <h5>No hay transacciones registradas</h5>
+                                <p className="text-muted mb-3">Comienza registrando tu primera transacción</p>
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={() => setShowForm(true)}
+                                >
+                                    <i className="fas fa-plus me-2"></i>
+                                    Nueva Transacción
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
 
             {/* Paginación */}
             {transactions.length > 0 && (
-                <div className="mt-4 d-flex justify-content-center">
+                <div className="d-flex justify-content-center mt-4">
                     <Pagination
-                        currentPage={currentPage}
-                        totalPages={totalPages}
+                        currentPage={pagination.currentPage}
+                        totalPages={pagination.totalPages}
                         onPageChange={handlePageChange}
-                        hasNextPage={hasNextPage}
-                        hasPreviousPage={hasPreviousPage}
+                        hasNextPage={pagination.hasNextPage}
+                        hasPreviousPage={pagination.hasPreviousPage}
                     />
                 </div>
             )}

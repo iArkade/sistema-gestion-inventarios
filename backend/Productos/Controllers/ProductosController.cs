@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Productos.Data;
 using Productos.Models;
 
@@ -10,10 +11,28 @@ namespace Productos.Controllers;
 public class ProductosController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly IMemoryCache _cache;
+    private readonly ILogger<ProductosController> _logger;
 
-    public ProductosController(AppDbContext context)
+    private static readonly MemoryCacheEntryOptions DefaultCacheOptions = new()
+    {
+        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
+        SlidingExpiration = TimeSpan.FromMinutes(2),
+        Priority = CacheItemPriority.Normal
+    };
+
+    private static readonly MemoryCacheEntryOptions LongCacheOptions = new()
+    {
+        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10),
+        SlidingExpiration = TimeSpan.FromMinutes(5),
+        Priority = CacheItemPriority.High
+    };
+
+    public ProductosController(AppDbContext context, IMemoryCache cache, ILogger<ProductosController> logger)
     {
         _context = context;
+        _cache = cache;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -27,21 +46,32 @@ public class ProductosController : ControllerBase
     {
         try
         {
-            var query = _context.Productos.AsQueryable();
+            pageSize = Math.Min(pageSize, 100);
+            page = Math.Max(page, 1);
 
-            // Filtro por texto
-            if (!string.IsNullOrEmpty(search))
+            var cacheKey = $"products_{search}_{category}_{sortBy}_{sortDirection}_{page}_{pageSize}";
+            
+            if (_cache.TryGetValue(cacheKey, out ApiResponse<PagedResult<Producto>>? cachedResult))
             {
-                search = search.ToLower();
-                query = query.Where(p => p.Name.ToLower().Contains(search) ||
-                    (p.Description != null && p.Description.ToLower().Contains(search)));
+                _logger.LogInformation("Returning cached products for key: {CacheKey}", cacheKey);
+                return Ok(cachedResult);
             }
 
-            // Filtro por categoría
-            if (!string.IsNullOrEmpty(category))
+            var query = _context.Productos.AsNoTracking();
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var searchLower = search.ToLower();
+                query = query.Where(p => 
+                    EF.Functions.Like(p.Name.ToLower(), $"%{searchLower}%") ||
+                    (p.Description != null && EF.Functions.Like(p.Description.ToLower(), $"%{searchLower}%")));
+            }
+
+            if (!string.IsNullOrWhiteSpace(category))
                 query = query.Where(p => p.Category == category);
 
-            // Ordenamiento dinámico
+            var totalRecords = await query.CountAsync();
+
             query = sortBy?.ToLower() switch
             {
                 "name" => sortDirection?.ToLower() == "desc"
@@ -59,8 +89,6 @@ public class ProductosController : ControllerBase
                 _ => query.OrderBy(p => p.Name)
             };
 
-            var totalRecords = await query.CountAsync();
-
             var products = await query
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
@@ -74,15 +102,26 @@ public class ProductosController : ControllerBase
                 PageSize = pageSize
             };
 
-            return Ok(new ApiResponse<PagedResult<Producto>>
+            var response = new ApiResponse<PagedResult<Producto>>
             {
                 Success = true,
                 Message = "Productos obtenidos exitosamente",
                 Data = result
-            });
+            };
+
+            var cacheTime = (string.IsNullOrEmpty(search) && string.IsNullOrEmpty(category)) 
+                ? LongCacheOptions 
+                : DefaultCacheOptions;
+            
+            _cache.Set(cacheKey, response, cacheTime);
+            
+            _logger.LogInformation("Products retrieved and cached for key: {CacheKey}", cacheKey);
+            
+            return Ok(response);
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Error retrieving products");
             return StatusCode(500, new ApiResponse<PagedResult<Producto>>
             {
                 Success = false,
@@ -97,7 +136,16 @@ public class ProductosController : ControllerBase
     {
         try
         {
-            var product = await _context.Productos.FindAsync(id);
+            var cacheKey = $"product_{id}";
+            
+            if (_cache.TryGetValue(cacheKey, out ApiResponse<Producto>? cachedResult))
+            {
+                _logger.LogInformation("Returning cached product for ID: {ProductId}", id);
+                return Ok(cachedResult);
+            }
+
+            var product = await _context.Productos.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+            
             if (product == null)
             {
                 return NotFound(new ApiResponse<Producto>
@@ -107,15 +155,20 @@ public class ProductosController : ControllerBase
                 });
             }
 
-            return Ok(new ApiResponse<Producto>
+            var response = new ApiResponse<Producto>
             {
                 Success = true,
                 Message = "Producto obtenido exitosamente",
                 Data = product
-            });
+            };
+
+            _cache.Set(cacheKey, response, LongCacheOptions);
+            
+            return Ok(response);
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Error retrieving product {ProductId}", id);
             return StatusCode(500, new ApiResponse<Producto>
             {
                 Success = false,
@@ -147,10 +200,10 @@ public class ProductosController : ControllerBase
 
             var product = new Producto
             {
-                Name = request.Name,
-                Description = request.Description,
-                Category = request.Category,
-                ImageUrl = request.ImageUrl,
+                Name = request.Name.Trim(),
+                Description = request.Description?.Trim(),
+                Category = request.Category.Trim(),
+                ImageUrl = request.ImageUrl?.Trim(),
                 Price = request.Price,
                 Stock = request.Stock
             };
@@ -158,16 +211,22 @@ public class ProductosController : ControllerBase
             _context.Productos.Add(product);
             await _context.SaveChangesAsync();
 
-            return CreatedAtAction(nameof(GetProduct), new { id = product.Id },
-                new ApiResponse<Producto>
-                {
-                    Success = true,
-                    Message = "Producto creado exitosamente",
-                    Data = product
-                });
+            InvalidateProductCache();
+
+            var response = new ApiResponse<Producto>
+            {
+                Success = true,
+                Message = "Producto creado exitosamente",
+                Data = product
+            };
+
+            _logger.LogInformation("Product created with ID: {ProductId}", product.Id);
+
+            return CreatedAtAction(nameof(GetProduct), new { id = product.Id }, response);
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Error creating product");
             return StatusCode(500, new ApiResponse<Producto>
             {
                 Success = false,
@@ -207,24 +266,32 @@ public class ProductosController : ControllerBase
                 });
             }
 
-            product.Name = request.Name;
-            product.Description = request.Description;
-            product.Category = request.Category;
-            product.ImageUrl = request.ImageUrl;
+            product.Name = request.Name.Trim();
+            product.Description = request.Description?.Trim();
+            product.Category = request.Category.Trim();
+            product.ImageUrl = request.ImageUrl?.Trim();
             product.Price = request.Price;
             product.Stock = request.Stock;
 
             await _context.SaveChangesAsync();
 
-            return Ok(new ApiResponse<Producto>
+            InvalidateProductCache();
+            _cache.Remove($"product_{id}");
+
+            var response = new ApiResponse<Producto>
             {
                 Success = true,
                 Message = "Producto actualizado exitosamente",
                 Data = product
-            });
+            };
+
+            _logger.LogInformation("Product updated with ID: {ProductId}", id);
+
+            return Ok(response);
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Error updating product {ProductId}", id);
             return StatusCode(500, new ApiResponse<Producto>
             {
                 Success = false,
@@ -252,6 +319,11 @@ public class ProductosController : ControllerBase
             _context.Productos.Remove(product);
             await _context.SaveChangesAsync();
 
+            InvalidateProductCache();
+            _cache.Remove($"product_{id}");
+
+            _logger.LogInformation("Product deleted with ID: {ProductId}", id);
+
             return Ok(new ApiResponse<bool>
             {
                 Success = true,
@@ -261,6 +333,7 @@ public class ProductosController : ControllerBase
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Error deleting product {ProductId}", id);
             return StatusCode(500, new ApiResponse<bool>
             {
                 Success = false,
@@ -284,8 +357,10 @@ public class ProductosController : ControllerBase
                 });
             }
 
-            var product = await _context.Productos.FindAsync(id);
-            if (product == null)
+            var rowsAffected = await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Productos SET Stock = {0} WHERE Id = {1}", newStock, id);
+
+            if (rowsAffected == 0)
             {
                 return NotFound(new ApiResponse<bool>
                 {
@@ -294,8 +369,10 @@ public class ProductosController : ControllerBase
                 });
             }
 
-            product.Stock = newStock;
-            await _context.SaveChangesAsync();
+            _cache.Remove($"product_{id}");
+            InvalidateProductCache();
+
+            _logger.LogInformation("Stock updated for product {ProductId} to {NewStock}", id, newStock);
 
             return Ok(new ApiResponse<bool>
             {
@@ -306,6 +383,7 @@ public class ProductosController : ControllerBase
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Error updating stock for product {ProductId}", id);
             return StatusCode(500, new ApiResponse<bool>
             {
                 Success = false,
@@ -320,21 +398,35 @@ public class ProductosController : ControllerBase
     {
         try
         {
+            const string cacheKey = "categories";
+            
+            if (_cache.TryGetValue(cacheKey, out ApiResponse<List<string>>? cachedResult))
+            {
+                _logger.LogInformation("Returning cached categories");
+                return Ok(cachedResult);
+            }
+
             var categories = await _context.Productos
+                .AsNoTracking()
                 .Select(p => p.Category)
                 .Distinct()
                 .OrderBy(c => c)
                 .ToListAsync();
 
-            return Ok(new ApiResponse<List<string>>
+            var response = new ApiResponse<List<string>>
             {
                 Success = true,
                 Message = "Categorías obtenidas exitosamente",
                 Data = categories
-            });
+            };
+
+            _cache.Set(cacheKey, response, TimeSpan.FromMinutes(15));
+
+            return Ok(response);
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Error retrieving categories");
             return StatusCode(500, new ApiResponse<List<string>>
             {
                 Success = false,
@@ -342,5 +434,16 @@ public class ProductosController : ControllerBase
                 Errors = new List<string> { ex.Message }
             });
         }
+    }
+
+    private void InvalidateProductCache()
+    {
+        var cacheKeys = new[] { "categories" };
+        foreach (var key in cacheKeys)
+        {
+            _cache.Remove(key);
+        }
+
+        _logger.LogInformation("Product cache invalidated");
     }
 }

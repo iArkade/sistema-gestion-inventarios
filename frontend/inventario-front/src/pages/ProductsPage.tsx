@@ -1,9 +1,137 @@
-// ProductsPage.tsx - Versión con diseño moderno y elegante
-import React, { useState, useEffect, type FormEvent, type ChangeEvent } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, type FormEvent, type ChangeEvent } from 'react';
 import { productApi, NotificationService } from '../services/api';
 import type { Product, CreateProductRequest, FormErrors, FilterParameters } from '../types';
 import Pagination from '../components/Pagination';
 import LoadingSpinner from '../components/LoadingSpinner';
+
+const ProductRow = React.memo(({
+    product,
+    onEdit,
+    onDelete,
+    formatPrice,
+    getStockBadge
+}: {
+    product: Product;
+    onEdit: (product: Product) => void;
+    onDelete: (product: Product) => void;
+    formatPrice: (price: number) => string;
+    getStockBadge: (stock: number) => { class: string; text: string; icon: string };
+}) => {
+    const stockInfo = getStockBadge(product.stock);
+
+    return (
+        <tr>
+            <td>
+                <div>
+                    <div className="fw-semibold">{product.name}</div>
+                    {product.description && (
+                        <small className="text-muted">
+                            {product.description.length > 50
+                                ? `${product.description.substring(0, 50)}...`
+                                : product.description}
+                        </small>
+                    )}
+                </div>
+            </td>
+            <td>
+                <span className="badge bg-info">{product.category}</span>
+            </td>
+            <td className="fw-semibold text-success">{formatPrice(product.price)}</td>
+            <td>
+                <span className="fw-bold fs-5">{product.stock}</span>
+                <small className="text-muted d-block">unidades</small>
+            </td>
+            <td>
+                <span className={`badge ${stockInfo.class}`}>
+                    <i className={`fas ${stockInfo.icon} me-1`}></i>
+                    {stockInfo.text}
+                </span>
+            </td>
+            <td>
+                <small className="text-muted">
+                    {new Date(product.createdAt).toLocaleDateString('es-ES')}
+                </small>
+            </td>
+            <td>
+                <div className="btn-group btn-group-sm">
+                    <button
+                        className="btn btn-outline-primary"
+                        onClick={() => onEdit(product)}
+                        title={`Editar ${product.name}`}
+                    >
+                        <i className="fas fa-edit"></i>
+                    </button>
+                    <button
+                        className="btn btn-outline-danger"
+                        onClick={() => onDelete(product)}
+                        title={`Eliminar ${product.name}`}
+                    >
+                        <i className="fas fa-trash"></i>
+                    </button>
+                </div>
+            </td>
+        </tr>
+    );
+});
+
+const StatsCards = React.memo(({
+    totalRecords,
+    categoriesCount,
+    inStockCount,
+    lowStockCount
+}: {
+    totalRecords: number;
+    categoriesCount: number;
+    inStockCount: number;
+    lowStockCount: number;
+}) => (
+    <div className="row mb-4">
+        <div className="col-lg-3 col-md-6 mb-3">
+            <div className="stats-card">
+                <div className="stats-icon bg-primary">
+                    <i className="fas fa-boxes"></i>
+                </div>
+                <div className="stats-content">
+                    <h3 className="stats-number">{totalRecords}</h3>
+                    <p className="stats-label">Total Productos</p>
+                </div>
+            </div>
+        </div>
+        <div className="col-lg-3 col-md-6 mb-3">
+            <div className="stats-card">
+                <div className="stats-icon bg-info">
+                    <i className="fas fa-tags"></i>
+                </div>
+                <div className="stats-content">
+                    <h3 className="stats-number">{categoriesCount}</h3>
+                    <p className="stats-label">Categorías</p>
+                </div>
+            </div>
+        </div>
+        <div className="col-lg-3 col-md-6 mb-3">
+            <div className="stats-card">
+                <div className="stats-icon bg-success">
+                    <i className="fas fa-check-circle"></i>
+                </div>
+                <div className="stats-content">
+                    <h3 className="stats-number">{inStockCount}</h3>
+                    <p className="stats-label">En Stock</p>
+                </div>
+            </div>
+        </div>
+        <div className="col-lg-3 col-md-6 mb-3">
+            <div className="stats-card">
+                <div className="stats-icon bg-warning">
+                    <i className="fas fa-exclamation-triangle"></i>
+                </div>
+                <div className="stats-content">
+                    <h3 className="stats-number">{lowStockCount}</h3>
+                    <p className="stats-label">Stock Bajo</p>
+                </div>
+            </div>
+        </div>
+    </div>
+));
 
 const ProductsPage: React.FC = () => {
     const [products, setProducts] = useState<Product[]>([]);
@@ -12,19 +140,21 @@ const ProductsPage: React.FC = () => {
     const [showForm, setShowForm] = useState<boolean>(false);
     const [editingProduct, setEditingProduct] = useState<Product | null>(null);
 
-    // Filtros
-    const [search, setSearch] = useState<string>('');
-    const [category, setCategory] = useState<string>('');
-    const [sortBy, setSortBy] = useState<string>('name');
-    const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+    const [filters, setFilters] = useState({
+        search: '',
+        category: '',
+        sortBy: 'name',
+        sortDirection: 'asc' as 'asc' | 'desc'
+    });
 
-    // Paginación
-    const [currentPage, setCurrentPage] = useState<number>(1);
-    const [pageSize, setPageSize] = useState<number>(10);
-    const [totalPages, setTotalPages] = useState<number>(1);
-    const [totalRecords, setTotalRecords] = useState<number>(0);
-    const [hasNextPage, setHasNextPage] = useState<boolean>(false);
-    const [hasPreviousPage, setHasPreviousPage] = useState<boolean>(false);
+    const [pagination, setPagination] = useState({
+        currentPage: 1,
+        pageSize: 10,
+        totalPages: 1,
+        totalRecords: 0,
+        hasNextPage: false,
+        hasPreviousPage: false
+    });
 
     const [formData, setFormData] = useState<CreateProductRequest>({
         name: '',
@@ -37,47 +167,119 @@ const ProductsPage: React.FC = () => {
 
     const [formErrors, setFormErrors] = useState<FormErrors>({});
 
-    useEffect(() => {
-        loadProducts();
-        loadCategories();
-    }, [search, category, sortBy, sortDirection, currentPage, pageSize]);
+    const formatPrice = useCallback((price: number) => {
+        return new Intl.NumberFormat('es-ES', {
+            style: 'currency',
+            currency: 'USD'
+        }).format(price);
+    }, []);
 
-    const loadProducts = async (): Promise<void> => {
+    const getStockBadge = useCallback((stock: number) => {
+        if (stock === 0) return { class: 'bg-danger', text: 'Sin Stock', icon: 'fa-times-circle' };
+        if (stock < 10) return { class: 'bg-warning text-dark', text: 'Stock Bajo', icon: 'fa-exclamation-triangle' };
+        return { class: 'bg-success', text: 'Disponible', icon: 'fa-check-circle' };
+    }, []);
+
+    const stats = useMemo(() => ({
+        inStockCount: products.filter(p => p.stock > 0).length,
+        lowStockCount: products.filter(p => p.stock < 10 && p.stock > 0).length
+    }), [products]);
+
+    const loadProducts = useCallback(async (): Promise<void> => {
         setLoading(true);
         try {
-            const filters: FilterParameters = {
-                search,
-                category,
-                sortBy,
-                sortDirection,
-                page: currentPage,
-                pageSize
+            const filterParams: FilterParameters = {
+                search: filters.search || undefined,
+                category: filters.category || undefined,
+                sortBy: filters.sortBy,
+                sortDirection: filters.sortDirection,
+                page: pagination.currentPage,
+                pageSize: pagination.pageSize
             };
 
-            const result = await productApi.getAll(filters);
+            const result = await productApi.getAll(filterParams);
             setProducts(result.data);
-            setTotalPages(result.totalPages);
-            setTotalRecords(result.totalRecords);
-            setHasNextPage(result.hasNextPage);
-            setHasPreviousPage(result.hasPreviousPage);
+            setPagination(prev => ({
+                ...prev,
+                totalPages: result.totalPages,
+                totalRecords: result.totalRecords,
+                hasNextPage: result.hasNextPage,
+                hasPreviousPage: result.hasPreviousPage
+            }));
         } catch (error) {
             console.error('Error al cargar productos:', error);
-            NotificationService.show('Error al cargar los productos', 'danger');
         } finally {
             setLoading(false);
         }
-    };
+    }, [filters, pagination.currentPage, pagination.pageSize]);
 
-    const loadCategories = async (): Promise<void> => {
+    const loadCategories = useCallback(async (): Promise<void> => {
         try {
             const result = await productApi.getCategories();
             setCategories(result);
         } catch (error) {
             console.error('Error al cargar categorías:', error);
         }
-    };
+    }, []);
 
-    const validateForm = (): boolean => {
+    useEffect(() => {
+        loadProducts();
+    }, [loadProducts]);
+
+    useEffect(() => {
+        loadCategories();
+    }, [loadCategories]);
+
+    const handleFilterChange = useCallback((newFilters: Partial<typeof filters>) => {
+        setFilters(prev => ({ ...prev, ...newFilters }));
+        setPagination(prev => ({ ...prev, currentPage: 1 }));
+    }, []);
+
+    const handlePageChange = useCallback((page: number) => {
+        setPagination(prev => ({ ...prev, currentPage: page }));
+    }, []);
+
+    const handleEdit = useCallback(async (product: Product) => {
+        setEditingProduct(product);
+
+        if (categories.length === 0) {
+            await loadCategories();
+        }
+
+        setFormData({
+            name: product.name,
+            description: product.description || '',
+            category: product.category,
+            imageUrl: product.imageUrl || '',
+            price: product.price,
+            stock: product.stock
+        });
+        setFormErrors({});
+        setShowForm(true);
+    }, [categories.length, loadCategories]);
+
+    const handleDelete = useCallback(async (product: Product) => {
+        const confirmed = window.confirm(
+            `¿Eliminar este producto?\n\n` +
+            `📦 ${product.name}\n` +
+            `📂 ${product.category}\n` +
+            `📊 Stock: ${product.stock} unidades\n` +
+            `💰 Precio: ${formatPrice(product.price)}\n\n` +
+            `Esta acción no se puede deshacer.`
+        );
+
+        if (confirmed) {
+            try {
+                await productApi.delete(product.id);
+                await loadProducts();
+                await loadCategories();
+            } catch (error) {
+                console.error('Error al eliminar producto:', error);
+            }
+        }
+    }, [loadProducts, loadCategories, formatPrice]);
+
+    const validateForm = useCallback((): boolean => {
         const errors: FormErrors = {};
 
         if (!formData.name.trim()) {
@@ -108,75 +310,50 @@ const ProductsPage: React.FC = () => {
 
         setFormErrors(errors);
         return Object.keys(errors).length === 0;
-    };
+    }, [formData]);
 
-    const handleSubmit = async (e: FormEvent<HTMLFormElement>): Promise<void> => {
+    const handleSubmit = useCallback(async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
 
         if (!validateForm()) {
-            NotificationService.show('Por favor corrige los errores en el formulario', 'warning');
+            NotificationService.show('Corrige los errores en el formulario', 'warning');
             return;
         }
 
         try {
             if (editingProduct) {
                 await productApi.update(editingProduct.id, formData);
-                NotificationService.show('Producto actualizado exitosamente', 'success');
             } else {
                 await productApi.create(formData);
-                NotificationService.show('Producto creado exitosamente', 'success');
             }
 
-            handleCloseForm();
+            setShowForm(false);
+            setEditingProduct(null);
+            setFormData({ name: '', description: '', category: '', imageUrl: '', price: 0, stock: 0 });
+            setFormErrors({});
             await loadProducts();
             await loadCategories();
         } catch (error) {
             console.error('Error al guardar producto:', error);
-            NotificationService.show('Error al guardar el producto', 'danger');
         }
-    };
+    }, [formData, editingProduct, validateForm, loadProducts, loadCategories]);
 
-    const handleEdit = async (product: Product): Promise<void> => {
-        setEditingProduct(product);
+    const handleInputChange = useCallback((e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+        const { name, value, type } = e.target;
 
-        // Asegurar que tenemos las categorías cargadas
-        if (categories.length === 0) {
-            await loadCategories();
+        setFormData(prev => ({
+            ...prev,
+            [name]: type === 'number' ? (value === '' ? 0 : Number(value)) : value
+        }));
+
+        if (formErrors[name]) {
+            setFormErrors(prev => {
+                const updated = { ...prev };
+                delete updated[name];
+                return updated;
+            });
         }
-
-        setFormData({
-            name: product.name,
-            description: product.description || '',
-            category: product.category,
-            imageUrl: product.imageUrl || '',
-            price: product.price,
-            stock: product.stock
-        });
-        setFormErrors({});
-        setShowForm(true);
-    };
-
-    const handleDelete = async (product: Product): Promise<void> => {
-        const confirmed = window.confirm(
-            `¿Estás seguro de que deseas eliminar este producto?\n\n` +
-            `📦 Producto: ${product.name}\n` +
-            `📂 Categoría: ${product.category}\n` +
-            `📊 Stock actual: ${product.stock} unidades\n` +
-            `💰 Precio: $${product.price.toFixed(2)}\n\n` +
-            `⚠️ Esta acción no se puede deshacer.`
-        );
-
-        if (confirmed) {
-            try {
-                await productApi.delete(product.id);
-                NotificationService.show('Producto eliminado exitosamente', 'success');
-                await loadProducts();
-            } catch (error) {
-                console.error('Error al eliminar producto:', error);
-                NotificationService.show('Error al eliminar el producto', 'danger');
-            }
-        }
-    };
+    }, [formErrors]);
 
     const handleCloseForm = (): void => {
         setShowForm(false);
@@ -185,82 +362,34 @@ const ProductsPage: React.FC = () => {
         setFormErrors({});
     };
 
-    const handlePageChange = (page: number): void => {
-        setCurrentPage(page);
-    };
-
-    const handleFilterChange = (): void => {
-        setCurrentPage(1);
-    };
-
     const clearFilters = (): void => {
-        setSearch('');
-        setCategory('');
-        setSortBy('name');
-        setSortDirection('asc');
-        setCurrentPage(1);
-        NotificationService.show('Filtros limpiados', 'info');
-    };
-
-    const handleInputChange = (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>): void => {
-        const { name, value, type } = e.target;
-
-        setFormData(prev => ({
-            ...prev,
-            [name]: type === 'number' ? (value === '' ? 0 : Number(value)) : value
-        }));
-
-        // Limpiar error específico al escribir
-        if (formErrors[name]) {
-            setFormErrors(prev => {
-                const updated = { ...prev };
-                delete updated[name];
-                return updated;
-            });
-        }
-    };
-
-    const getStockBadge = (stock: number) => {
-        if (stock === 0) return { class: 'bg-danger', text: 'Sin Stock', icon: 'fa-times-circle' };
-        if (stock < 10) return { class: 'bg-warning', text: 'Stock Bajo', icon: 'fa-exclamation-triangle' };
-        return { class: 'bg-success', text: 'Disponible', icon: 'fa-check-circle' };
-    };
-
-    const formatPrice = (price: number) => {
-        return new Intl.NumberFormat('es-ES', {
-            style: 'currency',
-            currency: 'USD'
-        }).format(price);
+        setFilters({
+            search: '',
+            category: '',
+            sortBy: 'name',
+            sortDirection: 'asc'
+        });
+        setPagination(prev => ({ ...prev, currentPage: 1 }));
     };
 
     return (
-        <div className="fade-in-up">
-            {/* Header Mejorado */}
+        <div className="container-fluid py-4">
+            {/* Header Profesional */}
             <div className="row align-items-center mb-4">
-                <div className="col-md-8">
+                <div className="col">
                     <div className="d-flex align-items-center">
-                        <div className="me-3">
-                            <div
-                                className="d-flex align-items-center justify-content-center"
-                                style={{
-                                    width: '60px',
-                                    height: '60px',
-                                    background: 'linear-gradient(135deg, #2563eb 0%, #3b82f6 100%)',
-                                    borderRadius: '16px',
-                                    boxShadow: '0 4px 12px rgba(37, 99, 235, 0.3)'
-                                }}
-                            >
-                                <i className="fas fa-boxes fa-lg text-white"></i>
-                            </div>
+                        <div className="icon-box bg-primary me-3">
+                            <i className="fas fa-boxes"></i>
                         </div>
                         <div>
-                            <h1 className="mb-1 fw-bold text-gradient">Gestión de Productos</h1>
+                            <h1 className="h3 mb-0 fw-bold">Gestión de Productos</h1>
+                            <p className="text-muted mb-0">Administra tu inventario de productos</p>
                         </div>
                     </div>
                 </div>
-                <div className="col-md-4 text-end">
+                <div className="col-auto">
                     <button
-                        className="btn btn-primary btn-lg hover-lift"
+                        className="btn btn-primary btn-lg"
                         onClick={() => {
                             setShowForm(true);
                             setEditingProduct(null);
@@ -269,83 +398,31 @@ const ProductsPage: React.FC = () => {
                         }}
                     >
                         <i className="fas fa-plus me-2"></i>
-                        <span>Nuevo Producto</span>
+                        Nuevo Producto
                     </button>
                 </div>
             </div>
 
-            {/* Stats Cards */}
-            <div className="row mb-4">
-                <div className="col-md-3 mb-3">
-                    <div className="card h-100">
-                        <div className="card-body text-center">
-                            <div className="mb-2">
-                                <i className="fas fa-boxes fa-2x text-primary"></i>
-                            </div>
-                            <h4 className="fw-bold text-primary">{totalRecords}</h4>
-                            <small className="text-muted">Total Productos</small>
-                        </div>
-                    </div>
-                </div>
-                <div className="col-md-3 mb-3">
-                    <div className="card h-100">
-                        <div className="card-body text-center">
-                            <div className="mb-2">
-                                <i className="fas fa-tags fa-2x text-info"></i>
-                            </div>
-                            <h4 className="fw-bold text-info">{categories.length}</h4>
-                            <small className="text-muted">Categorías</small>
-                        </div>
-                    </div>
-                </div>
-                <div className="col-md-3 mb-3">
-                    <div className="card h-100">
-                        <div className="card-body text-center">
-                            <div className="mb-2">
-                                <i className="fas fa-check-circle fa-2x text-success"></i>
-                            </div>
-                            <h4 className="fw-bold text-success">
-                                {products.filter(p => p.stock > 0).length}
-                            </h4>
-                            <small className="text-muted">En Stock</small>
-                        </div>
-                    </div>
-                </div>
-                <div className="col-md-3 mb-3">
-                    <div className="card h-100">
-                        <div className="card-body text-center">
-                            <div className="mb-2">
-                                <i className="fas fa-exclamation-triangle fa-2x text-warning"></i>
-                            </div>
-                            <h4 className="fw-bold text-warning">
-                                {products.filter(p => p.stock < 10 && p.stock > 0).length}
-                            </h4>
-                            <small className="text-muted">Stock Bajo</small>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            {/* Estadísticas */}
+            <StatsCards
+                totalRecords={pagination.totalRecords}
+                categoriesCount={categories.length}
+                inStockCount={stats.inStockCount}
+                lowStockCount={stats.lowStockCount}
+            />
 
-            {/* Filtros Mejorados */}
-            <div className="card mb-4 hover-lift">
+            {/* Filtros Simplificados */}
+            <div className="card mb-4">
                 <div className="card-header">
-                    <div className="d-flex align-items-center justify-content-between">
-                        <h5 className="mb-0 fw-bold">
-                            <i className="fas fa-filter me-2 text-primary"></i>
-                            Filtros de Búsqueda
-                        </h5>
-                        <small className="text-muted">
-                            Mostrando {products.length} de {totalRecords} productos
-                        </small>
-                    </div>
+                    <h5 className="card-title mb-0">
+                        <i className="fas fa-filter me-2"></i>
+                        Filtros
+                    </h5>
                 </div>
                 <div className="card-body">
                     <div className="row g-3">
                         <div className="col-md-4">
-                            <label className="form-label">
-                                <i className="fas fa-search me-1"></i>
-                                Buscar Producto
-                            </label>
+                            <label className="form-label">Buscar Producto</label>
                             <div className="input-group">
                                 <span className="input-group-text">
                                     <i className="fas fa-search"></i>
@@ -354,28 +431,19 @@ const ProductsPage: React.FC = () => {
                                     type="text"
                                     className="form-control"
                                     placeholder="Nombre o descripción..."
-                                    value={search}
-                                    onChange={(e) => {
-                                        setSearch(e.target.value);
-                                        handleFilterChange();
-                                    }}
+                                    value={filters.search}
+                                    onChange={(e) => handleFilterChange({ search: e.target.value })}
                                 />
                             </div>
                         </div>
                         <div className="col-md-3">
-                            <label className="form-label">
-                                <i className="fas fa-tag me-1"></i>
-                                Categoría
-                            </label>
+                            <label className="form-label">Categoría</label>
                             <select
                                 className="form-select"
-                                value={category}
-                                onChange={(e) => {
-                                    setCategory(e.target.value);
-                                    handleFilterChange();
-                                }}
+                                value={filters.category}
+                                onChange={(e) => handleFilterChange({ category: e.target.value })}
                             >
-                                <option value="">Todas las categorías</option>
+                                <option value="">Todas</option>
                                 {categories.map(cat => (
                                     <option key={cat} value={cat}>{cat}</option>
                                 ))}
@@ -385,8 +453,8 @@ const ProductsPage: React.FC = () => {
                             <label className="form-label">Ordenar por</label>
                             <select
                                 className="form-select"
-                                value={sortBy}
-                                onChange={(e) => setSortBy(e.target.value)}
+                                value={filters.sortBy}
+                                onChange={(e) => handleFilterChange({ sortBy: e.target.value })}
                             >
                                 <option value="name">Nombre</option>
                                 <option value="price">Precio</option>
@@ -398,21 +466,24 @@ const ProductsPage: React.FC = () => {
                             <label className="form-label">Dirección</label>
                             <select
                                 className="form-select"
-                                value={sortDirection}
-                                onChange={(e) => setSortDirection(e.target.value as 'asc' | 'desc')}
+                                value={filters.sortDirection}
+                                onChange={(e) => handleFilterChange({ sortDirection: e.target.value as 'asc' | 'desc' })}
                             >
-                                <option value="asc">⬆ Ascendente</option>
-                                <option value="desc">⬇ Descendente</option>
+                                <option value="asc">Ascendente</option>
+                                <option value="desc">Descendente</option>
                             </select>
                         </div>
                         <div className="col-md-1">
                             <label className="form-label">Por página</label>
                             <select
                                 className="form-select"
-                                value={pageSize}
+                                value={pagination.pageSize}
                                 onChange={(e) => {
-                                    setPageSize(parseInt(e.target.value));
-                                    setCurrentPage(1);
+                                    setPagination(prev => ({
+                                        ...prev,
+                                        pageSize: parseInt(e.target.value),
+                                        currentPage: 1
+                                    }));
                                 }}
                             >
                                 <option value="5">5</option>
@@ -424,11 +495,8 @@ const ProductsPage: React.FC = () => {
                     </div>
                     <div className="row mt-3">
                         <div className="col">
-                            <button
-                                className="btn btn-outline-secondary hover-lift"
-                                onClick={clearFilters}
-                            >
-                                <i className="fas fa-eraser me-2"></i>
+                            <button className="btn btn-outline-secondary" onClick={clearFilters}>
+                                <i className="fas fa-times me-2"></i>
                                 Limpiar Filtros
                             </button>
                         </div>
@@ -436,7 +504,7 @@ const ProductsPage: React.FC = () => {
                 </div>
             </div>
 
-            {/* Modal de Formulario */}
+            {/* Modal de Formulario Mejorado */}
             {showForm && (
                 <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
                     <div className="modal-dialog modal-lg modal-dialog-centered">
@@ -453,9 +521,7 @@ const ProductsPage: React.FC = () => {
                                     <div className="row g-3">
                                         <div className="col-md-6">
                                             <label className="form-label">
-                                                <i className="fas fa-box me-1"></i>
-                                                Nombre del Producto
-                                                <span className="text-danger">*</span>
+                                                Nombre del Producto <span className="text-danger">*</span>
                                             </label>
                                             <input
                                                 type="text"
@@ -471,9 +537,7 @@ const ProductsPage: React.FC = () => {
                                         </div>
                                         <div className="col-md-6">
                                             <label className="form-label">
-                                                <i className="fas fa-tags me-1"></i>
-                                                Categoría
-                                                <span className="text-danger">*</span>
+                                                Categoría <span className="text-danger">*</span>
                                             </label>
                                             <input
                                                 type="text"
@@ -499,15 +563,11 @@ const ProductsPage: React.FC = () => {
                                                 <option value="Juguetes" />
                                             </datalist>
                                             {formErrors.category && <div className="invalid-feedback">{formErrors.category}</div>}
-                                            <small className="text-muted">Puedes escribir una nueva categoría</small>
                                         </div>
                                     </div>
 
                                     <div className="mt-3">
-                                        <label className="form-label">
-                                            <i className="fas fa-align-left me-1"></i>
-                                            Descripción
-                                        </label>
+                                        <label className="form-label">Descripción</label>
                                         <textarea
                                             name="description"
                                             className={`form-control ${formErrors.description ? 'is-invalid' : ''}`}
@@ -524,10 +584,7 @@ const ProductsPage: React.FC = () => {
                                     </div>
 
                                     <div className="mt-3">
-                                        <label className="form-label">
-                                            <i className="fas fa-image me-1"></i>
-                                            URL de Imagen
-                                        </label>
+                                        <label className="form-label">URL de Imagen</label>
                                         <input
                                             type="url"
                                             name="imageUrl"
@@ -543,9 +600,7 @@ const ProductsPage: React.FC = () => {
                                     <div className="row g-3 mt-2">
                                         <div className="col-md-6">
                                             <label className="form-label">
-                                                <i className="fas fa-dollar-sign me-1"></i>
-                                                Precio
-                                                <span className="text-danger">*</span>
+                                                Precio <span className="text-danger">*</span>
                                             </label>
                                             <div className="input-group">
                                                 <span className="input-group-text">$</span>
@@ -565,9 +620,7 @@ const ProductsPage: React.FC = () => {
                                         </div>
                                         <div className="col-md-6">
                                             <label className="form-label">
-                                                <i className="fas fa-cubes me-1"></i>
-                                                Stock
-                                                <span className="text-danger">*</span>
+                                                Stock <span className="text-danger">*</span>
                                             </label>
                                             <input
                                                 type="number"
@@ -584,8 +637,7 @@ const ProductsPage: React.FC = () => {
                                     </div>
                                 </div>
                                 <div className="modal-footer">
-                                    <button type="button" className="btn btn-outline-secondary" onClick={handleCloseForm}>
-                                        <i className="fas fa-times me-2"></i>
+                                    <button type="button" className="btn btn-secondary" onClick={handleCloseForm}>
                                         Cancelar
                                     </button>
                                     <button type="submit" className="btn btn-primary">
@@ -607,142 +659,71 @@ const ProductsPage: React.FC = () => {
                     </div>
                 </div>
             ) : (
-                <div className="card hover-lift">
-                    <div className="card-body p-0">
-                        <div className="table-responsive">
-                            <table className="table mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>
-                                            <i className="fas fa-box me-2"></i>
-                                            Producto
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-tag me-2"></i>
-                                            Categoría
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-dollar-sign me-2"></i>
-                                            Precio
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-cubes me-2"></i>
-                                            Stock
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-info-circle me-2"></i>
-                                            Estado
-                                        </th>
-                                        <th>
-                                            <i className="fas fa-calendar me-2"></i>
-                                            Fecha
-                                        </th>
-                                        <th style={{ width: '130px' }}>
-                                            <i className="fas fa-cogs me-2"></i>
-                                            Acciones
-                                        </th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {products.length > 0 ? (
-                                        products.map(product => {
-                                            const stockInfo = getStockBadge(product.stock);
-                                            return (
-                                                <tr key={product.id}>
-                                                    <td>
-                                                        <div>
-                                                            <div className="fw-bold text-dark">{product.name}</div>
-                                                            {product.description && (
-                                                                <small className="text-muted">
-                                                                    {product.description.length > 60
-                                                                        ? `${product.description.substring(0, 60)}...`
-                                                                        : product.description}
-                                                                </small>
-                                                            )}
-                                                        </div>
-                                                    </td>
-                                                    <td>
-                                                        <span className="badge bg-info">
-                                                            <i className="fas fa-tag me-1"></i>
-                                                            {product.category}
-                                                        </span>
-                                                    </td>
-                                                    <td>
-                                                        <span className="fw-bold text-success fs-6">
-                                                            {formatPrice(product.price)}
-                                                        </span>
-                                                    </td>
-                                                    <td>
-                                                        <span className="fw-bold fs-5">{product.stock}</span>
-                                                        <small className="text-muted d-block">unidades</small>
-                                                    </td>
-                                                    <td>
-                                                        <span className={`badge ${stockInfo.class}`}>
-                                                            <i className={`fas ${stockInfo.icon} me-1`}></i>
-                                                            {stockInfo.text}
-                                                        </span>
-                                                    </td>
-                                                    <td>
-                                                        <small className="text-muted">
-                                                            <i className="fas fa-calendar-alt me-1"></i>
-                                                            {new Date(product.createdAt).toLocaleDateString('es-ES')}
-                                                        </small>
-                                                    </td>
-                                                    <td>
-                                                        <div className="btn-group btn-group-sm" role="group">
-                                                            <button
-                                                                className="btn btn-outline-primary"
-                                                                onClick={() => handleEdit(product)}
-                                                                title={`Editar ${product.name}`}
-                                                            >
-                                                                <i className="fas fa-edit"></i>
-                                                            </button>
-                                                            <button
-                                                                className="btn btn-outline-danger"
-                                                                onClick={() => handleDelete(product)}
-                                                                title={`Eliminar ${product.name}`}
-                                                            >
-                                                                <i className="fas fa-trash"></i>
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })
-                                    ) : (
-                                        <tr>
-                                            <td colSpan={7} className="text-center py-5">
-                                                <div className="empty-state">
-                                                    <i className="fas fa-inbox"></i>
-                                                    <h5>No hay productos disponibles</h5>
-                                                    <p>Comienza agregando tu primer producto al inventario</p>
-                                                    <button
-                                                        className="btn btn-primary"
-                                                        onClick={() => setShowForm(true)}
-                                                    >
-                                                        <i className="fas fa-plus me-2"></i>
-                                                        Agregar Producto
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    )}
-                                </tbody>
-                            </table>
+                <div className="card">
+                    <div className="card-header">
+                        <div className="d-flex justify-content-between align-items-center">
+                            <h5 className="card-title mb-0">Inventario de Productos</h5>
+                            <small className="text-muted">
+                                {products.length} de {pagination.totalRecords} productos
+                            </small>
                         </div>
+                    </div>
+                    <div className="card-body p-0">
+                        {products.length > 0 ? (
+                            <div className="table-responsive">
+                                <table className="table table-hover mb-0">
+                                    <thead className="table-light">
+                                        <tr>
+                                            <th>Producto</th>
+                                            <th>Categoría</th>
+                                            <th>Precio</th>
+                                            <th>Stock</th>
+                                            <th>Estado</th>
+                                            <th>Fecha</th>
+                                            <th style={{ width: '120px' }}>Acciones</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {products.map(product => (
+                                            <ProductRow
+                                                key={product.id}
+                                                product={product}
+                                                onEdit={handleEdit}
+                                                onDelete={handleDelete}
+                                                formatPrice={formatPrice}
+                                                getStockBadge={getStockBadge}
+                                            />
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ) : (
+                            <div className="text-center py-5">
+                                <i className="fas fa-boxes fa-3x text-muted mb-3"></i>
+                                <h5>No hay productos disponibles</h5>
+                                <p className="text-muted mb-3">Comienza agregando tu primer producto al inventario</p>
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={() => setShowForm(true)}
+                                >
+                                    <i className="fas fa-plus me-2"></i>
+                                    Agregar Producto
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
 
             {/* Paginación */}
             {products.length > 0 && (
-                <div className="mt-4 d-flex justify-content-center">
+                <div className="d-flex justify-content-center mt-4">
                     <Pagination
-                        currentPage={currentPage}
-                        totalPages={totalPages}
+                        currentPage={pagination.currentPage}
+                        totalPages={pagination.totalPages}
                         onPageChange={handlePageChange}
-                        hasNextPage={hasNextPage}
-                        hasPreviousPage={hasPreviousPage}
+                        hasNextPage={pagination.hasNextPage}
+                        hasPreviousPage={pagination.hasPreviousPage}
                     />
                 </div>
             )}

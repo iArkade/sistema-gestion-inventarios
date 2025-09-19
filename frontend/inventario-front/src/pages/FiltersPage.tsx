@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { productApi, transactionApi, NotificationService } from '../services/api';
 import type {
     Product,
@@ -16,20 +16,22 @@ const FiltersPage: React.FC = () => {
     const [selectedProductId, setSelectedProductId] = useState<string>('');
     const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
-    // Filtros
-    const [dateFrom, setDateFrom] = useState<string>('');
-    const [dateTo, setDateTo] = useState<string>('');
-    const [transactionType, setTransactionType] = useState<string>('');
-    const [search, setSearch] = useState<string>('');
+    const [filters, setFilters] = useState({
+        dateFrom: '',
+        dateTo: '',
+        transactionType: '',
+        search: ''
+    });
 
-    const [currentPage, setCurrentPage] = useState<number>(1);
-    const [pageSize, setPageSize] = useState<number>(10);
-    const [totalPages, setTotalPages] = useState<number>(1);
-    const [totalRecords, setTotalRecords] = useState<number>(0);
-    const [hasNextPage, setHasNextPage] = useState<boolean>(false);
-    const [hasPreviousPage, setHasPreviousPage] = useState<boolean>(false);
+    const [pagination, setPagination] = useState({
+        currentPage: 1,
+        pageSize: 10,
+        totalPages: 1,
+        totalRecords: 0,
+        hasNextPage: false,
+        hasPreviousPage: false
+    });
 
-    // Estadísticas
     const [stats, setStats] = useState<TransactionStats>({
         totalTransactions: 0,
         totalPurchases: 0,
@@ -50,58 +52,57 @@ const FiltersPage: React.FC = () => {
             setSelectedProduct(null);
             resetStats();
         }
-    }, [selectedProductId, dateFrom, dateTo, transactionType, search, currentPage, pageSize]);
+    }, [selectedProductId, filters, pagination.currentPage, pagination.pageSize]);
 
-    const loadProducts = async (): Promise<void> => {
+    const loadProducts = useCallback(async (): Promise<void> => {
         try {
             const result = await productApi.getAll({ pageSize: 1000 });
             setProducts(result.data);
         } catch (error) {
             console.error('Error al cargar productos:', error);
-            NotificationService.show('Error al cargar los productos', 'danger');
         }
-    };
+    }, []);
 
-    const loadTransactions = async (): Promise<void> => {
+    const loadTransactions = useCallback(async (): Promise<void> => {
         if (!selectedProductId) return;
 
         setLoading(true);
         try {
             const productId = parseInt(selectedProductId);
+
             const productResult = await productApi.getById(productId);
             setSelectedProduct(productResult);
-
-            // Cargar transacciones con filtros
-            const filters: FilterParameters = {
+            const filterParams: FilterParameters = {
                 productId: productId,
-                dateFrom: dateFrom || undefined,
-                dateTo: dateTo || undefined,
-                transactionType: transactionType || undefined,
-                search: search || undefined,
-                page: currentPage,
-                pageSize,
+                dateFrom: filters.dateFrom || undefined,
+                dateTo: filters.dateTo || undefined,
+                transactionType: filters.transactionType || undefined,
+                search: filters.search || undefined,
+                page: pagination.currentPage,
+                pageSize: pagination.pageSize,
                 sortBy: 'date',
                 sortDirection: 'desc'
             };
 
-            const result = await transactionApi.getAll(filters);
+            const result = await transactionApi.getAll(filterParams);
             setTransactions(result.data);
-            setTotalPages(result.totalPages);
-            setTotalRecords(result.totalRecords);
-            setHasNextPage(result.hasNextPage);
-            setHasPreviousPage(result.hasPreviousPage);
+            setPagination(prev => ({
+                ...prev,
+                totalPages: result.totalPages,
+                totalRecords: result.totalRecords,
+                hasNextPage: result.hasNextPage,
+                hasPreviousPage: result.hasPreviousPage
+            }));
 
-            // Calcular estadísticas
             calculateStats(result.data);
         } catch (error) {
             console.error('Error al cargar transacciones:', error);
-            NotificationService.show('Error al cargar las transacciones', 'danger');
         } finally {
             setLoading(false);
         }
-    };
+    }, [selectedProductId, filters, pagination.currentPage, pagination.pageSize]);
 
-    const calculateStats = (transactionList: Transaction[]): void => {
+    const calculateStats = useCallback((transactionList: Transaction[]): void => {
         const purchases = transactionList.filter(t => t.transactionType === 'Purchase');
         const sales = transactionList.filter(t => t.transactionType === 'Sale');
 
@@ -115,9 +116,9 @@ const FiltersPage: React.FC = () => {
             totalPurchaseAmount,
             totalSaleAmount
         });
-    };
+    }, []);
 
-    const resetStats = (): void => {
+    const resetStats = useCallback((): void => {
         setStats({
             totalTransactions: 0,
             totalPurchases: 0,
@@ -125,11 +126,11 @@ const FiltersPage: React.FC = () => {
             totalPurchaseAmount: 0,
             totalSaleAmount: 0
         });
-    };
+    }, []);
 
     const handleProductChange = (productId: string): void => {
         setSelectedProductId(productId);
-        setCurrentPage(1);
+        setPagination(prev => ({ ...prev, currentPage: 1 }));
         setTransactions([]);
         resetStats();
 
@@ -139,25 +140,31 @@ const FiltersPage: React.FC = () => {
         }
     };
 
+    const handleFilterChange = (newFilters: Partial<typeof filters>): void => {
+        setFilters(prev => ({ ...prev, ...newFilters }));
+        setPagination(prev => ({ ...prev, currentPage: 1 }));
+    };
+
     const handlePageChange = (page: number): void => {
-        setCurrentPage(page);
+        setPagination(prev => ({ ...prev, currentPage: page }));
     };
 
     const handlePageSizeChange = (newPageSize: number): void => {
-        setPageSize(newPageSize);
-        setCurrentPage(1);
+        setPagination(prev => ({ ...prev, pageSize: newPageSize, currentPage: 1 }));
     };
 
     const clearFilters = (): void => {
-        setDateFrom('');
-        setDateTo('');
-        setTransactionType('');
-        setSearch('');
-        setCurrentPage(1);
+        setFilters({
+            dateFrom: '',
+            dateTo: '',
+            transactionType: '',
+            search: ''
+        });
+        setPagination(prev => ({ ...prev, currentPage: 1 }));
         NotificationService.show('Filtros limpiados', 'info');
     };
 
-    const formatPrice = (price: number) => {
+    const formatPrice = (price: number): string => {
         return new Intl.NumberFormat('es-ES', {
             style: 'currency',
             currency: 'USD'
@@ -166,68 +173,50 @@ const FiltersPage: React.FC = () => {
 
     const getProductStockBadge = (stock: number) => {
         if (stock === 0) return { class: 'bg-danger', text: 'Sin Stock', icon: 'fa-times-circle' };
-        if (stock < 10) return { class: 'bg-warning', text: 'Stock Bajo', icon: 'fa-exclamation-triangle' };
+        if (stock < 10) return { class: 'bg-warning text-dark', text: 'Stock Bajo', icon: 'fa-exclamation-triangle' };
         return { class: 'bg-success', text: 'Disponible', icon: 'fa-check-circle' };
     };
 
     return (
-        <div className="fade-in-up">
-            {/* Header Mejorado */}
+        <div className="container-fluid py-4">
+            {/* Header Profesional */}
             <div className="row align-items-center mb-4">
-                <div className="col-md-8">
+                <div className="col">
                     <div className="d-flex align-items-center">
-                        <div className="me-3">
-                            <div
-                                className="d-flex align-items-center justify-content-center"
-                                style={{
-                                    width: '60px',
-                                    height: '60px',
-                                    background: 'linear-gradient(135deg, #d97706 0%, #ea580c 100%)',
-                                    borderRadius: '16px',
-                                    boxShadow: '0 4px 12px rgba(217, 119, 6, 0.3)'
-                                }}
-                            >
-                                <i className="fas fa-chart-bar fa-lg text-white"></i>
-                            </div>
+                        <div className="icon-box bg-warning me-3">
+                            <i className="fas fa-chart-bar"></i>
                         </div>
                         <div>
-                            <h1 className="mb-1 fw-bold text-gradient">Reportes y Análisis</h1>
+                            <h1 className="h3 mb-0 fw-bold">Reportes y Análisis</h1>
+                            <p className="text-muted mb-0">Analiza el historial de transacciones por producto</p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* Selección de Producto Mejorada */}
-            <div className="card mb-4 hover-lift">
+            {/* Selección de Producto */}
+            <div className="card mb-4">
                 <div className="card-header">
-                    <h5 className="mb-0 fw-bold">
-                        <i className="fas fa-search me-2 text-primary"></i>
+                    <h5 className="card-title mb-0">
+                        <i className="fas fa-search me-2"></i>
                         Seleccionar Producto para Análisis
                     </h5>
                 </div>
                 <div className="card-body">
                     <div className="row g-4">
                         <div className="col-md-8">
-                            <label className="form-label">
-                                <i className="fas fa-box me-1"></i>
-                                Producto a Analizar
-                            </label>
+                            <label className="form-label">Producto a Analizar</label>
                             <select
                                 className="form-select form-select-lg"
                                 value={selectedProductId}
                                 onChange={(e) => handleProductChange(e.target.value)}
                             >
-                                <option value="">🔍 Seleccionar producto para ver su historial completo</option>
-                                {products.map(product => {
-                                    return (
-                                        <option key={product.id} value={product.id.toString()}>
-                                            📦 {product.name} •
-                                            📊 Stock: {product.stock} •
-                                            💰 {formatPrice(product.price)} •
-                                            🏷️ {product.category}
-                                        </option>
-                                    );
-                                })}
+                                <option value="">Seleccionar producto para ver su historial completo</option>
+                                {products.map(product => (
+                                    <option key={product.id} value={product.id.toString()}>
+                                        {product.name} • Stock: {product.stock} • {formatPrice(product.price)} • {product.category}
+                                    </option>
+                                ))}
                             </select>
                             <small className="text-muted mt-2 d-block">
                                 Selecciona un producto para ver su historial completo de transacciones
@@ -242,27 +231,21 @@ const FiltersPage: React.FC = () => {
                                             Información del Producto
                                         </h6>
                                         <div className="mb-2">
-                                            <strong>📦 Nombre:</strong>
-                                            <br />
-                                            <span className="text-dark">{selectedProduct.name}</span>
+                                            <strong>Nombre:</strong> {selectedProduct.name}
                                         </div>
                                         <div className="mb-2">
-                                            <strong>📊 Stock:</strong>
-                                            <br />
-                                            <span className={`badge ${getProductStockBadge(selectedProduct.stock).class}`}>
+                                            <strong>Stock:</strong>
+                                            <span className={`badge ms-2 ${getProductStockBadge(selectedProduct.stock).class}`}>
                                                 <i className={`fas ${getProductStockBadge(selectedProduct.stock).icon} me-1`}></i>
                                                 {selectedProduct.stock} unidades
                                             </span>
                                         </div>
                                         <div className="mb-2">
-                                            <strong>💰 Precio:</strong>
-                                            <br />
-                                            <span className="fw-bold text-success">{formatPrice(selectedProduct.price)}</span>
+                                            <strong>Precio:</strong> {formatPrice(selectedProduct.price)}
                                         </div>
                                         <div>
-                                            <strong>🏷️ Categoría:</strong>
-                                            <br />
-                                            <span className="badge bg-info">{selectedProduct.category}</span>
+                                            <strong>Categoría:</strong>
+                                            <span className="badge bg-info ms-2">{selectedProduct.category}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -281,17 +264,17 @@ const FiltersPage: React.FC = () => {
 
             {selectedProductId && (
                 <>
-                    {/* Filtros Avanzados */}
-                    <div className="card mb-4 hover-lift">
+                    {/* Filtros de Transacciones */}
+                    <div className="card mb-4">
                         <div className="card-header">
                             <div className="d-flex align-items-center justify-content-between">
-                                <h5 className="mb-0 fw-bold">
-                                    <i className="fas fa-filter me-2 text-primary"></i>
+                                <h5 className="card-title mb-0">
+                                    <i className="fas fa-filter me-2"></i>
                                     Filtros de Transacciones
                                 </h5>
                                 {transactions.length > 0 && (
                                     <small className="text-muted">
-                                        Mostrando {transactions.length} de {totalRecords} transacciones
+                                        Mostrando {transactions.length} de {pagination.totalRecords} transacciones
                                     </small>
                                 )}
                             </div>
@@ -299,77 +282,59 @@ const FiltersPage: React.FC = () => {
                         <div className="card-body">
                             <div className="row g-3">
                                 <div className="col-md-3">
-                                    <label className="form-label">
-                                        <i className="fas fa-search me-1"></i>
-                                        Buscar en Detalles
-                                    </label>
+                                    <label className="form-label">Buscar en Detalles</label>
                                     <input
                                         type="text"
                                         className="form-control"
                                         placeholder="Buscar en detalles..."
-                                        value={search}
-                                        onChange={(e) => setSearch(e.target.value)}
+                                        value={filters.search}
+                                        onChange={(e) => handleFilterChange({ search: e.target.value })}
                                     />
                                 </div>
                                 <div className="col-md-3">
-                                    <label className="form-label">
-                                        <i className="fas fa-tag me-1"></i>
-                                        Tipo de Transacción
-                                    </label>
+                                    <label className="form-label">Tipo de Transacción</label>
                                     <select
                                         className="form-select"
-                                        value={transactionType}
-                                        onChange={(e) => setTransactionType(e.target.value)}
+                                        value={filters.transactionType}
+                                        onChange={(e) => handleFilterChange({ transactionType: e.target.value })}
                                     >
                                         <option value="">Todos los tipos</option>
-                                        <option value="Purchase">🔻 Solo Compras</option>
-                                        <option value="Sale">🔺 Solo Ventas</option>
+                                        <option value="Purchase">Solo Compras</option>
+                                        <option value="Sale">Solo Ventas</option>
                                     </select>
                                 </div>
                                 <div className="col-md-3">
-                                    <label className="form-label">
-                                        <i className="fas fa-calendar me-1"></i>
-                                        Fecha Desde
-                                    </label>
+                                    <label className="form-label">Fecha Desde</label>
                                     <input
                                         type="date"
                                         className="form-control"
-                                        value={dateFrom}
-                                        onChange={(e) => setDateFrom(e.target.value)}
+                                        value={filters.dateFrom}
+                                        onChange={(e) => handleFilterChange({ dateFrom: e.target.value })}
                                     />
                                 </div>
                                 <div className="col-md-3">
-                                    <label className="form-label">
-                                        <i className="fas fa-calendar-alt me-1"></i>
-                                        Fecha Hasta
-                                    </label>
+                                    <label className="form-label">Fecha Hasta</label>
                                     <input
                                         type="date"
                                         className="form-control"
-                                        value={dateTo}
-                                        onChange={(e) => setDateTo(e.target.value)}
+                                        value={filters.dateTo}
+                                        onChange={(e) => handleFilterChange({ dateTo: e.target.value })}
                                     />
                                 </div>
                             </div>
                             <div className="row mt-3 align-items-end">
                                 <div className="col-md-6">
-                                    <button
-                                        className="btn btn-outline-secondary hover-lift"
-                                        onClick={clearFilters}
-                                    >
-                                        <i className="fas fa-eraser me-2"></i>
+                                    <button className="btn btn-outline-secondary" onClick={clearFilters}>
+                                        <i className="fas fa-times me-2"></i>
                                         Limpiar Filtros
                                     </button>
                                 </div>
                                 <div className="col-md-6 text-end">
                                     <div className="d-flex align-items-center justify-content-end">
-                                        <label className="form-label me-2 mb-0">
-                                            <i className="fas fa-list me-1"></i>
-                                            Registros por página:
-                                        </label>
+                                        <label className="form-label me-2 mb-0">Registros por página:</label>
                                         <select
                                             className="form-select w-auto"
-                                            value={pageSize}
+                                            value={pagination.pageSize}
                                             onChange={(e) => handlePageSizeChange(parseInt(e.target.value))}
                                         >
                                             <option value="10">10</option>
@@ -383,61 +348,61 @@ const FiltersPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* Estadísticas Mejoradas */}
+                    {/* Estadísticas */}
                     {transactions.length > 0 && (
                         <div className="row mb-4">
                             <div className="col-lg-2 col-md-4 mb-3">
-                                <div className="card h-100 text-center hover-lift">
-                                    <div className="card-body">
-                                        <div className="mb-2">
-                                            <i className="fas fa-list fa-2x text-primary"></i>
-                                        </div>
-                                        <h4 className="fw-bold text-primary">{stats.totalTransactions}</h4>
-                                        <small className="text-muted">Total Transacciones</small>
+                                <div className="stats-card">
+                                    <div className="stats-icon bg-primary">
+                                        <i className="fas fa-list"></i>
+                                    </div>
+                                    <div className="stats-content">
+                                        <h3 className="stats-number">{stats.totalTransactions}</h3>
+                                        <p className="stats-label">Total Transacciones</p>
                                     </div>
                                 </div>
                             </div>
                             <div className="col-lg-2 col-md-4 mb-3">
-                                <div className="card h-100 text-center hover-lift">
-                                    <div className="card-body">
-                                        <div className="mb-2">
-                                            <i className="fas fa-arrow-down fa-2x text-success"></i>
-                                        </div>
-                                        <h4 className="fw-bold text-success">{stats.totalPurchases}</h4>
-                                        <small className="text-muted">Compras</small>
+                                <div className="stats-card">
+                                    <div className="stats-icon bg-success">
+                                        <i className="fas fa-arrow-down"></i>
+                                    </div>
+                                    <div className="stats-content">
+                                        <h3 className="stats-number">{stats.totalPurchases}</h3>
+                                        <p className="stats-label">Compras</p>
                                     </div>
                                 </div>
                             </div>
                             <div className="col-lg-2 col-md-4 mb-3">
-                                <div className="card h-100 text-center hover-lift">
-                                    <div className="card-body">
-                                        <div className="mb-2">
-                                            <i className="fas fa-arrow-up fa-2x text-danger"></i>
-                                        </div>
-                                        <h4 className="fw-bold text-danger">{stats.totalSales}</h4>
-                                        <small className="text-muted">Ventas</small>
+                                <div className="stats-card">
+                                    <div className="stats-icon bg-danger">
+                                        <i className="fas fa-arrow-up"></i>
+                                    </div>
+                                    <div className="stats-content">
+                                        <h3 className="stats-number">{stats.totalSales}</h3>
+                                        <p className="stats-label">Ventas</p>
                                     </div>
                                 </div>
                             </div>
                             <div className="col-lg-3 col-md-6 mb-3">
-                                <div className="card h-100 text-center hover-lift">
-                                    <div className="card-body">
-                                        <div className="mb-2">
-                                            <i className="fas fa-shopping-cart fa-2x text-success"></i>
-                                        </div>
-                                        <h5 className="fw-bold text-success">{formatPrice(stats.totalPurchaseAmount)}</h5>
-                                        <small className="text-muted">Total en Compras</small>
+                                <div className="stats-card">
+                                    <div className="stats-icon bg-success">
+                                        <i className="fas fa-shopping-cart"></i>
+                                    </div>
+                                    <div className="stats-content">
+                                        <h4 className="stats-number">{formatPrice(stats.totalPurchaseAmount)}</h4>
+                                        <p className="stats-label">Total en Compras</p>
                                     </div>
                                 </div>
                             </div>
                             <div className="col-lg-3 col-md-6 mb-3">
-                                <div className="card h-100 text-center hover-lift">
-                                    <div className="card-body">
-                                        <div className="mb-2">
-                                            <i className="fas fa-cash-register fa-2x text-danger"></i>
-                                        </div>
-                                        <h5 className="fw-bold text-danger">{formatPrice(stats.totalSaleAmount)}</h5>
-                                        <small className="text-muted">Total en Ventas</small>
+                                <div className="stats-card">
+                                    <div className="stats-icon bg-danger">
+                                        <i className="fas fa-cash-register"></i>
+                                    </div>
+                                    <div className="stats-content">
+                                        <h4 className="stats-number">{formatPrice(stats.totalSaleAmount)}</h4>
+                                        <p className="stats-label">Total en Ventas</p>
                                     </div>
                                 </div>
                             </div>
@@ -452,72 +417,52 @@ const FiltersPage: React.FC = () => {
                             </div>
                         </div>
                     ) : (
-                        <div className="card hover-lift">
+                        <div className="card">
                             <div className="card-header">
                                 <div className="d-flex align-items-center justify-content-between">
-                                    <h5 className="mb-0 fw-bold">
-                                        <i className="fas fa-history me-2 text-primary"></i>
+                                    <h5 className="card-title mb-0">
+                                        <i className="fas fa-history me-2"></i>
                                         Historial de Transacciones
                                         {selectedProduct && (
                                             <span className="ms-2 text-muted">- {selectedProduct.name}</span>
                                         )}
                                     </h5>
                                     {transactions.length > 0 && (
-                                        <div className="d-flex gap-2">
-                                            <span className="badge bg-info">
-                                                {transactions.length} transacciones
-                                            </span>
-                                        </div>
+                                        <span className="badge bg-info">
+                                            {transactions.length} transacciones
+                                        </span>
                                     )}
                                 </div>
                             </div>
                             <div className="card-body p-0">
                                 {transactions.length > 0 ? (
                                     <div className="table-responsive">
-                                        <table className="table mb-0">
-                                            <thead>
+                                        <table className="table table-hover mb-0">
+                                            <thead className="table-light">
                                                 <tr>
-                                                    <th>
-                                                        <i className="fas fa-calendar me-2"></i>
-                                                        Fecha y Hora
-                                                    </th>
-                                                    <th>
-                                                        <i className="fas fa-tag me-2"></i>
-                                                        Tipo
-                                                    </th>
-                                                    <th>
-                                                        <i className="fas fa-calculator me-2"></i>
-                                                        Cantidad
-                                                    </th>
-                                                    <th>
-                                                        <i className="fas fa-dollar-sign me-2"></i>
-                                                        P. Unitario
-                                                    </th>
-                                                    <th>
-                                                        <i className="fas fa-receipt me-2"></i>
-                                                        Total
-                                                    </th>
-                                                    <th>
-                                                        <i className="fas fa-cubes me-2"></i>
-                                                        Stock Actual
-                                                    </th>
-                                                    <th>
-                                                        <i className="fas fa-comment me-2"></i>
-                                                        Detalles
-                                                    </th>
+                                                    <th>Fecha y Hora</th>
+                                                    <th>Tipo</th>
+                                                    <th>Cantidad</th>
+                                                    <th>P. Unitario</th>
+                                                    <th>Total</th>
+                                                    <th>Stock Actual</th>
+                                                    <th>Detalles</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {transactions.map((transaction) => (
                                                     <tr key={transaction.id}>
                                                         <td>
-                                                            <div>
-                                                                <div className="fw-bold">
+                                                            <div className="small">
+                                                                <div className="fw-semibold">
                                                                     {new Date(transaction.transactionDate).toLocaleDateString('es-ES')}
                                                                 </div>
-                                                                <small className="text-muted">
-                                                                    {new Date(transaction.transactionDate).toLocaleTimeString('es-ES')}
-                                                                </small>
+                                                                <div className="text-muted">
+                                                                    {new Date(transaction.transactionDate).toLocaleTimeString('es-ES', {
+                                                                        hour: '2-digit',
+                                                                        minute: '2-digit'
+                                                                    })}
+                                                                </div>
                                                             </div>
                                                         </td>
                                                         <td>
@@ -527,16 +472,14 @@ const FiltersPage: React.FC = () => {
                                                             </span>
                                                         </td>
                                                         <td>
-                                                            <span className={`fw-bold fs-6 ${transaction.transactionType === 'Purchase' ? 'text-success' : 'text-danger'}`}>
+                                                            <span className={`fw-bold ${transaction.transactionType === 'Purchase' ? 'text-success' : 'text-danger'}`}>
                                                                 {transaction.transactionType === 'Purchase' ? '+' : '-'}{transaction.quantity}
                                                             </span>
                                                             <small className="text-muted d-block">unidades</small>
                                                         </td>
+                                                        <td className="fw-semibold">{formatPrice(transaction.unitPrice)}</td>
                                                         <td>
-                                                            <span className="fw-bold">{formatPrice(transaction.unitPrice)}</span>
-                                                        </td>
-                                                        <td>
-                                                            <span className={`fw-bold fs-6 ${transaction.transactionType === 'Purchase' ? 'text-success' : 'text-danger'}`}>
+                                                            <span className={`fw-bold ${transaction.transactionType === 'Purchase' ? 'text-success' : 'text-danger'}`}>
                                                                 {formatPrice(transaction.totalPrice)}
                                                             </span>
                                                         </td>
@@ -558,7 +501,7 @@ const FiltersPage: React.FC = () => {
                                                                     {transaction.details}
                                                                 </span>
                                                             ) : (
-                                                                <em className="text-muted">Sin detalles</em>
+                                                                <span className="text-muted fst-italic">Sin detalles</span>
                                                             )}
                                                         </td>
                                                     </tr>
@@ -568,24 +511,19 @@ const FiltersPage: React.FC = () => {
                                     </div>
                                 ) : (
                                     <div className="text-center py-5">
-                                        <div className="empty-state">
-                                            <i className="fas fa-search"></i>
-                                            <h5>No se encontraron transacciones</h5>
-                                            <p>
-                                                {selectedProductId
-                                                    ? 'No hay transacciones para este producto con los filtros aplicados.'
-                                                    : 'Seleccione un producto para ver su historial de transacciones.'}
-                                            </p>
-                                            {selectedProductId && (dateFrom || dateTo || transactionType || search) && (
-                                                <button
-                                                    className="btn btn-primary mt-2"
-                                                    onClick={clearFilters}
-                                                >
-                                                    <i className="fas fa-eraser me-2"></i>
-                                                    Limpiar Filtros
-                                                </button>
-                                            )}
-                                        </div>
+                                        <i className="fas fa-search fa-3x text-muted mb-3"></i>
+                                        <h5>No se encontraron transacciones</h5>
+                                        <p className="text-muted mb-3">
+                                            {selectedProductId
+                                                ? 'No hay transacciones para este producto con los filtros aplicados.'
+                                                : 'Seleccione un producto para ver su historial de transacciones.'}
+                                        </p>
+                                        {selectedProductId && (filters.dateFrom || filters.dateTo || filters.transactionType || filters.search) && (
+                                            <button className="btn btn-primary" onClick={clearFilters}>
+                                                <i className="fas fa-times me-2"></i>
+                                                Limpiar Filtros
+                                            </button>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -594,13 +532,13 @@ const FiltersPage: React.FC = () => {
 
                     {/* Paginación */}
                     {transactions.length > 0 && (
-                        <div className="mt-4 d-flex justify-content-center">
+                        <div className="d-flex justify-content-center mt-4">
                             <Pagination
-                                currentPage={currentPage}
-                                totalPages={totalPages}
+                                currentPage={pagination.currentPage}
+                                totalPages={pagination.totalPages}
                                 onPageChange={handlePageChange}
-                                hasNextPage={hasNextPage}
-                                hasPreviousPage={hasPreviousPage}
+                                hasNextPage={pagination.hasNextPage}
+                                hasPreviousPage={pagination.hasPreviousPage}
                             />
                         </div>
                     )}
