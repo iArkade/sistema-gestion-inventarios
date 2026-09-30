@@ -16,8 +16,8 @@ Sistema web completo para la gestión de inventarios desarrollado con arquitectu
 
 **Backend:**
 - .NET 8.0
-- Entity Framework Core
-- SQL Server
+- Entity Framework Core (Pomelo.EntityFrameworkCore.MySql)
+- MySQL 8
 - ASP.NET Core Web API
 - Arquitectura de Microservicios
 
@@ -43,10 +43,10 @@ Sistema web completo para la gestión de inventarios desarrollado con arquitectu
 
 #### Para el Backend (.NET)
 - **.NET 8.0 SDK** - [Descargar aquí](https://dotnet.microsoft.com/download/dotnet/8.0)
-- **SQL Server** (una de las siguientes opciones):
-  - SQL Server 2019/2022 (Local o Express)
-  - SQL Server LocalDB (incluido con Visual Studio)
-  - Docker con SQL Server container
+- **MySQL 8** (una de las siguientes opciones):
+  - XAMPP
+  - MySQL Server instalado localmente
+  - Docker con un contenedor de MySQL
 
 #### Para el Frontend (React)
 - **Node.js 18.x o superior** - [Descargar aquí](https://nodejs.org/)
@@ -54,7 +54,7 @@ Sistema web completo para la gestión de inventarios desarrollado con arquitectu
 
 #### Herramientas de Desarrollo (Recomendadas)
 - **Visual Studio 2022** o **Visual Studio Code**
-- **SQL Server Management Studio (SSMS)**
+- **MySQL Workbench** o **phpMyAdmin** (opcional)
 - **Git** - [Descargar aquí](https://git-scm.com/)
 
 #### Verificar Instalaciones
@@ -185,12 +185,15 @@ docker exec -it mysql-inventory mysql -u root -ptu_password -e "source /tmp/bd.s
 
 ### 2. Configurar Conexiones de Base de Datos
 
-#### Para el Microservicio de Productos
+Cada microservicio lee su cadena de conexión de `appsettings.json` (`backend/Productos/` y `backend/Transacciones/`):
 
-> **Nota**: Si usas SQL Server con autenticación por usuario/contraseña, cambia la cadena de conexión:
-> ```
-> "Server=localhost;Database=gestion_inventario;User Id=sa;Password=YourPassword;TrustServerCertificate=true;"
-> ```
+```json
+"ConnectionStrings": {
+  "Default": "Server=localhost;Database=gestion_inventario;User=root;Password=;"
+}
+```
+
+Si tu usuario de MySQL tiene contraseña, cámbiala en los dos archivos.
 
 ### 3. Ejecutar los Microservicios
 
@@ -234,10 +237,10 @@ Deberías ver la documentación Swagger de cada API.
 
 #### Error de Conexión a Base de Datos
 ```bash
-# Verificar que SQL Server esté ejecutándose
-# En Windows, abrir Services.msc y buscar "SQL Server"
+# Verificar que MySQL esté corriendo en el puerto 3306
+mysql -u root -p -e "SHOW DATABASES;"
 
-# Probar conexión con SSMS usando la misma cadena de conexión
+# Confirmar que existe la base gestion_inventario (se crea con bd.sql)
 ```
 
 #### Error de Certificado SSL
@@ -269,29 +272,16 @@ npm install
 yarn install
 ```
 
-### 2. Configurar Variables de Entorno
+### 2. Verificar Configuración de APIs
 
-Crear archivo `.env` en `Frontend/inventario-app/`:
-
-```env
-# URLs de las APIs del backend
-VITE_PRODUCTOS_API_URL=https://localhost:7001
-VITE_TRANSACCIONES_API_URL=https://localhost:7002
-
-# Configuración de desarrollo
-VITE_ENV=development
-```
-
-### 3. Verificar Configuración de APIs
-
-Editar `src/services/api.ts` si es necesario:
+Las URLs de las APIs están en `frontend/inventario-front/src/services/api.ts`; cámbialas solo si cambiaste los puertos del backend:
 
 ```typescript
 const API_BASE_URL = 'https://localhost:7001';
 const TRANSACTION_API_URL = 'https://localhost:7002';
 ```
 
-### 4. Ejecutar el Frontend
+### 3. Ejecutar el Frontend
 
 ```bash
 # Ejecutar en modo desarrollo
@@ -303,7 +293,7 @@ yarn dev
 
 El frontend estará disponible en: `http://localhost:5173`
 
-### 5. Construcción para Producción
+### 4. Construcción para Producción
 
 ```bash
 # Generar build de producción
@@ -316,8 +306,8 @@ npm run preview
 ### Solución de Problemas Comunes
 
 #### Error de CORS
-- Verificar que las URLs del frontend estén en `appsettings.json` de ambas APIs
-- Reiniciar los servicios del backend después de cambios en CORS
+- En desarrollo, ambas APIs permiten cualquier origen (`AllowAnyOrigin` en `Program.cs`)
+- Si el navegador rechaza el certificado HTTPS, ejecutar `dotnet dev-certs https --trust`
 
 #### Error de Conexión a APIs
 ```bash
@@ -336,7 +326,7 @@ npm install
 ```
 
 #### Font Awesome no se muestra
-Verificar que esté incluido en `public/index.html`:
+Verificar que esté incluido en `frontend/inventario-front/index.html`:
 ```html
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 ```
@@ -447,15 +437,9 @@ Verificar que esté incluido en `public/index.html`:
 
 ---
 
-## Licencia
-
-Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para más detalles.
-
----
-
 ## Autor
 
-**Tu Nombre**
+**Isaac Velasco**
 - GitHub: [iArkade](https://github.com/iArkade)
 - Email: isaacvelasco2000@gmail.com
 
